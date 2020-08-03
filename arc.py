@@ -216,4 +216,5 @@ def get_rifts(atl06_data):
 
 
 
-
+def find_rifts_in_atl03(rift_obs);
+#CCW was here
