@@ -44,22 +44,22 @@ def ingest(data_directory,output_file_name):
                     continue
 
 #             This is just used for Brunt:
-#                 if any(h_lon>0):
+                if any(h_lon>0):
 #                         Not clear why some of the data is out of the region of interest
-#                     continue
-#                 else:
+                    continue
+                else:
 
-                atl06_data["lat"].append( h_lat )
-                atl06_data["lon"].append( h_lon )
-                atl06_data["x"].append( h_x )
-                atl06_data["y"].append( h_y )
-                atl06_data["h_sig"].append( h_li_sigma )
-                atl06_data["h"].append( h_li)
-                atl06_data["azimuth"].append( seg_az )
-                atl06_data["rgt"].append( [rgt]*len(h_li) )
-                atl06_data["time"].append( [time]*len(h_li) )
-                atl06_data["acquisition_number"].append( [acq]*len(h_li) )
-                acq = acq + 1
+                    atl06_data["lat"].append( h_lat )
+                    atl06_data["lon"].append( h_lon )
+                    atl06_data["x"].append( h_x )
+                    atl06_data["y"].append( h_y )
+                    atl06_data["h_sig"].append( h_li_sigma )
+                    atl06_data["h"].append( h_li)
+                    atl06_data["azimuth"].append( seg_az )
+                    atl06_data["rgt"].append( [rgt]*len(h_li) )
+                    atl06_data["time"].append( [time]*len(h_li) )
+                    atl06_data["acquisition_number"].append( [acq]*len(h_li) )
+                    acq = acq + 1
                 
 #         print('Loaded file #%i of %i'%(file_index,nf))
         file_index = file_index+1
@@ -211,7 +211,8 @@ def get_rifts(atl06_data):
     
     return rift_obs
 
-
+def find_rifts_in_atl03(rift_obs):
+    # To be written
 
 
 
