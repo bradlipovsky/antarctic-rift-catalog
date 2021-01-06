@@ -6,8 +6,25 @@ import numpy as np
 from pyproj import Transformer
 import pickle
 import pandas as pd
+from netCDF4 import Dataset
+
+import matplotlib.pyplot as plt
 
 def ingest(data_directory,output_file_name):
+    
+    # Load BedMachine ice mask.  This is unfortunately a bit slow...
+    # 0 = ocean, 1 = ice-free land, 2 = grounded ice, 3 = floating ice, 4 = lake Vostok
+    maskfile = '/Users/lipovsky/Downloads/BedMachineAntarctica_2019-11-05_v01.nc'
+    fh = Dataset(maskfile, mode='r')
+    x = fh.variables['x'][:]
+    y = np.flipud(fh.variables['y'][:])
+    mask = np.flipud(fh.variables['mask'][:])
+
+    def mask_nearest (x0, y0):
+        xi = np.abs(x-x0).argmin()
+        yi = np.abs(y-y0).argmin()
+        return mask[yi,xi]
+    
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3031")
     
     ttstart = datetime.now()
@@ -48,34 +65,32 @@ def ingest(data_directory,output_file_name):
 
 #             This is just used for Brunt:
 #                         Not clear why some of the data is out of the region of interest
-                if any(h_lon>0):
-                    continue
+#                 if any(h_lon>0):
+#                     continue
 
-                atl06_data["lat"].append( h_lat )
-                atl06_data["lon"].append( h_lon )
-                atl06_data["x"].append( h_x )
-                atl06_data["y"].append( h_y )
-                atl06_data["h_sig"].append( h_li_sigma )
-                atl06_data["h"].append( h_li)
-                atl06_data["azimuth"].append( seg_az )
+                # Only add the point if is in the ice shelf mask
+                this_mask = [float(mask_nearest(XX,YY)) for XX,YY in zip(h_x,h_y)]
+            
+                atl06_data["lat"].append( np.array([h_lat[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                atl06_data["lon"].append( np.array([h_lon[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                atl06_data["x"].append( np.array([h_x[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                atl06_data["y"].append( np.array([h_y[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                atl06_data["h_sig"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                atl06_data["h"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                atl06_data["azimuth"].append( np.array([seg_az[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
                 atl06_data["rgt"].append( rgt )
                 atl06_data["time"].append( time )
                 atl06_data["beam"].append ( beam )
-                atl06_data["quality"].append ( quality )
-                atl06_data["x_atc"].append( h_xatc )
-                atl06_data["geoid"].append( geoid )
+                atl06_data["quality"].append ( np.array([quality[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                atl06_data["x_atc"].append( np.array([h_xatc[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                atl06_data["geoid"].append( np.array([geoid[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                
                 
         fid.close()
+        break
 
     ttend = datetime.now()
     print('Time to read the H5 files: ', ttend - ttstart)
-    
-    #
-    # Now convert to polar stereo coordinates
-    #
-    
-    
-
 
     # Store data (serialize)
     with open(output_file_name, 'wb') as handle:
@@ -197,18 +212,7 @@ def get_rifts(atl06_data):
     ttstart = datetime.now()
 
     for i, row in atl06_dataframe.iterrows():
-        
-        # Check to see how much data is available in this aquisition.  
-        # Do this by checking to see what data is in a physically reasonable range for ice shelves, say -10 to 200m asl
-        # For typical data, this is often between 99% and 100%
-#         h=row["h"]
-#         data_in_physical_range = len(h[(h<200)&(h>-10)])/len(h)
-#         availability_threshold = 0.95
-#         if data_in_physical_range < availability_threshold:
-#             continue
 
-        # measure height relative to GEOID
-        these_heights = row['h'] - row['geoid']
         
         # Data product is posted at 20m.  Allowing spacing to be up to 25m allows for some missing data but not much.
         spacing = (max(row['x_atc']) - min(row['x_atc'])) / len(row['h'])
@@ -216,11 +220,13 @@ def get_rifts(atl06_data):
             continue
             
         # Only allow a certain percentage of data to be problematic
-        percent_low_quality = sum(row["quality"]==1)  / len(row["quality"])
+        percent_low_quality = sum( row["quality"]==1 )  / len(row["quality"])
         if percent_low_quality > 0.2:
             continue
         
-        rift_list = find_the_rifts( these_heights )
+        # measure height relative to GEOID
+        rift_list = find_the_rifts( row['h'] - row['geoid'] )
+        
         
         if len(rift_list) > 0:
             
@@ -235,22 +241,20 @@ def get_rifts(atl06_data):
             output = convert_to_centroid(rift_list,row['x'],row['y'])
             output=pd.DataFrame(output)
             
+            
             rift_obs['x-centroid'].extend( output['x-centroid'] )
             rift_obs['y-centroid'].extend( output['y-centroid'] )
             rift_obs['width'].extend( output['width'] )
-            
+
             rift_obs['time'].extend( [ row['time'] ] * len(output) )
             rift_obs['rgt'].extend( [ row['rgt'] ] * len(output) )
             rift_obs['beam'].extend( [ row['beam'] ] * len(output) )
             rift_obs['data_row'].extend( [i] * len(output) )
-            
+
             rift_obs['azimuth'].extend ( rift_azi )
             rift_obs['sigma'].extend( rift_sig )
             rift_obs['h'].extend( rift_h )
             
-#             print("len(rift_list) = %f, len(output['x-centroid']) = %f"%(len(rift_list),len(output['x-centroid'])))
-            
-#         print('Completed %i of %i at %s'%(i,na,datetime.now()))
 
     # Save centroid locations in lat-lon
     transformer = Transformer.from_crs("EPSG:3031", "EPSG:4326")
