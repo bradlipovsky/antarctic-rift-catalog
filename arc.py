@@ -7,21 +7,19 @@ from pyproj import Transformer
 import pickle
 import pandas as pd
 from netCDF4 import Dataset
-import s3fs
 
 import matplotlib.pyplot as plt
 
-def ingest(file_list,output_file_name):
+def ingest(file_list,output_file_name, maskfile):
     
     # Load BedMachine ice mask.  This is unfortunately a bit slow...
     # 0 = ocean, 1 = ice-free land, 2 = grounded ice, 3 = floating ice, 4 = lake Vostok
-    maskfile = 'BedMachineAntarctica_2019-11-05_v01.nc'
     fh = Dataset(maskfile, mode='r')
     x = fh.variables['x'][:]
     y = np.flipud(fh.variables['y'][:])
     mask = np.flipud(fh.variables['mask'][:])
 
-    def mask_nearest (x0, y0):
+    def ice_mask_nearest (x0, y0):
         xi = np.abs(x-x0).argmin()
         yi = np.abs(y-y0).argmin()
         return mask[yi,xi]
@@ -33,6 +31,9 @@ def ingest(file_list,output_file_name):
     atl06_data = {"lat":list(),"lon":list(),"h":list(),"azimuth":list(),
                   "h_sig":list(),"rgt":list(),"time":list(), #"acquisition_number":list(),
                   "x":list(), "y":list(), "beam":list(), "quality":list(), "x_atc":list(), "geoid":list() }
+    
+    if any(f.startswith('s3') for f in file_list):
+        import s3fs
     
     for f in file_list:
         print(f)
@@ -69,7 +70,7 @@ def ingest(file_list,output_file_name):
 #                     continue
 
                 # Only add the point if is in the ice shelf mask
-#                 this_mask = [float(mask_nearest(XX,YY)) for XX,YY in zip(h_x,h_y)]
+#                 this_mask = [float(ice_mask_nearest(XX,YY)) for XX,YY in zip(h_x,h_y)]
             
 #                 atl06_data["lat"].append( np.array([h_lat[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
 #                 atl06_data["lon"].append( np.array([h_lon[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
