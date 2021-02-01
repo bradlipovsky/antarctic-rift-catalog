@@ -7,14 +7,15 @@ from pyproj import Transformer
 import pickle
 import pandas as pd
 from netCDF4 import Dataset
+import s3fs
 
 import matplotlib.pyplot as plt
 
-def ingest(data_directory,output_file_name):
+def ingest(file_list,output_file_name):
     
     # Load BedMachine ice mask.  This is unfortunately a bit slow...
     # 0 = ocean, 1 = ice-free land, 2 = grounded ice, 3 = floating ice, 4 = lake Vostok
-    maskfile = '/Users/lipovsky/Downloads/BedMachineAntarctica_2019-11-05_v01.nc'
+    maskfile = 'BedMachineAntarctica_2019-11-05_v01.nc'
     fh = Dataset(maskfile, mode='r')
     x = fh.variables['x'][:]
     y = np.flipud(fh.variables['y'][:])
@@ -28,39 +29,38 @@ def ingest(data_directory,output_file_name):
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3031")
     
     ttstart = datetime.now()
-
-    file_list = os.listdir(data_directory)
-    files = [f for f in file_list if f.endswith('.h5')]
-
-    print("Found %i files in the provided directory"%len(files))
     
     atl06_data = {"lat":list(),"lon":list(),"h":list(),"azimuth":list(),
                   "h_sig":list(),"rgt":list(),"time":list(), #"acquisition_number":list(),
                   "x":list(), "y":list(), "beam":list(), "quality":list(), "x_atc":list(), "geoid":list() }
-
-    nf = len(files)
-    for f in files:
-        FILE_NAME = os.path.join(data_directory,f)
-        fid = h5py.File(FILE_NAME, mode='r')
+    
+    for f in file_list:
+        print(f)
+        if f.startswith('s3'):
+            s3 = s3fs.S3FileSystem(anon=True)
+            fid =h5py.File(s3.open(f,'rb'),'r')
+        else:
+            fid = h5py.File(f, mode='r')
 
         for lr in ("l","r"):
             for i in range(1,4):
                 try:
-                    h_xatc = fid['gt%i%s/land_ice_segments/ground_track/x_atc'%(i,lr)][:]
-                    h_li = fid['gt%i%s/land_ice_segments/h_li'%(i,lr)][:]
-                    h_lat = fid['gt%i%s/land_ice_segments/latitude'%(i,lr)][:]
-                    h_lon = fid['gt%i%s/land_ice_segments/longitude'%(i,lr)][:]
-                    h_li_sigma = fid['gt%i%s/land_ice_segments/h_li_sigma'%(i,lr)][:]
-                    seg_az = fid['gt%i%s/land_ice_segments/ground_track/seg_azimuth'%(i,lr)][:]
-                    rgt = fid['/orbit_info/rgt'][0]
-                    quality = fid['gt%i%s/land_ice_segments/atl06_quality_summary'%(i,lr)][:]
-                    time = dparser.parse( fid['/ancillary_data/data_start_utc'][0] ,fuzzy=True )
-                    beam = "%i%s"%(i,lr)
-                    geoid = fid['/gt%i%s/land_ice_segments/dem/geoid_h'%(i,lr)][:]
-                    [h_x,h_y] = transformer.transform( h_lat , h_lon )
+                    data = fid['/']
+#                     h_xatc = fid['gt%i%s/land_ice_segments/ground_track/x_atc'%(i,lr)][:]
+#                     h_li = fid['gt%i%s/land_ice_segments/h_li'%(i,lr)][:]
+#                     h_lat = fid['gt%i%s/land_ice_segments/latitude'%(i,lr)][:]
+#                     h_lon = fid['gt%i%s/land_ice_segments/longitude'%(i,lr)][:]
+#                     h_li_sigma = fid['gt%i%s/land_ice_segments/h_li_sigma'%(i,lr)][:]
+#                     seg_az = fid['gt%i%s/land_ice_segments/ground_track/seg_azimuth'%(i,lr)][:]
+#                     rgt = fid['/orbit_info/rgt'][0]
+#                     quality = fid['gt%i%s/land_ice_segments/atl06_quality_summary'%(i,lr)][:]
+#                     time = dparser.parse( fid['/ancillary_data/data_start_utc'][0] ,fuzzy=True )
+#                     beam = "%i%s"%(i,lr)
+#                     geoid = fid['/gt%i%s/land_ice_segments/dem/geoid_h'%(i,lr)][:]
+#                     [h_x,h_y] = transformer.transform( h_lat , h_lon )
 
                 except KeyError:
-        #                 print("wtf key error")
+                    print("wtf key error")
                     continue
 
 #             This is just used for Brunt:
@@ -69,25 +69,25 @@ def ingest(data_directory,output_file_name):
 #                     continue
 
                 # Only add the point if is in the ice shelf mask
-                this_mask = [float(mask_nearest(XX,YY)) for XX,YY in zip(h_x,h_y)]
+#                 this_mask = [float(mask_nearest(XX,YY)) for XX,YY in zip(h_x,h_y)]
             
-                atl06_data["lat"].append( np.array([h_lat[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["lon"].append( np.array([h_lon[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["x"].append( np.array([h_x[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["y"].append( np.array([h_y[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["h_sig"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["h"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["azimuth"].append( np.array([seg_az[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["rgt"].append( rgt )
-                atl06_data["time"].append( time )
-                atl06_data["beam"].append ( beam )
-                atl06_data["quality"].append ( np.array([quality[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["x_atc"].append( np.array([h_xatc[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["geoid"].append( np.array([geoid[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["lat"].append( np.array([h_lat[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["lon"].append( np.array([h_lon[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["x"].append( np.array([h_x[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["y"].append( np.array([h_y[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["h_sig"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["h"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["azimuth"].append( np.array([seg_az[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["rgt"].append( rgt )
+#                 atl06_data["time"].append( time )
+#                 atl06_data["beam"].append ( beam )
+#                 atl06_data["quality"].append ( np.array([quality[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["x_atc"].append( np.array([h_xatc[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["geoid"].append( np.array([geoid[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
                 
-                
+                ttend = datetime.now()
+                print('Time to read this H5 file: ', ttend - ttstart)
         fid.close()
-        break
 
     ttend = datetime.now()
     print('Time to read the H5 files: ', ttend - ttstart)
@@ -192,6 +192,16 @@ def convert_to_centroid(rift_list,x,y):
 
 
 def get_rifts(atl06_data):
+    '''
+    arc.get_rifts 
+    
+    INPUT: atl06_data, the dictionary of lists of ATL06 data (this format can easily be converted to a pandas dataframe).
+            Each "row" contains the data from a single ATL06 file, masked to the Antarctic Ice Shelves.
+            The keys of the dictionary are defined in arc.ingest().
+            
+    OUTPUT: rift_obs, also a dictionary of lists, with each "row" corresponding to a single rift observation.  
+            The dictionary keys are defined below.
+    '''
 
     atl06_dataframe = pd.DataFrame(atl06_data)
 
@@ -213,7 +223,7 @@ def get_rifts(atl06_data):
 
     for i, row in atl06_dataframe.iterrows():
 
-        
+
         # Data product is posted at 20m.  Allowing spacing to be up to 25m allows for some missing data but not much.
         spacing = (max(row['x_atc']) - min(row['x_atc'])) / len(row['h'])
         if spacing > 25:
