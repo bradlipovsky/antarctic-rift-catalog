@@ -1,12 +1,13 @@
 import os
 import h5py
 import dateutil.parser as dparser
-from datetime import datetime
+import time as t
 import numpy as np
 from pyproj import Transformer
 import pickle
 import pandas as pd
 from netCDF4 import Dataset
+from scipy.spatial import cKDTree
 
 import matplotlib.pyplot as plt
 
@@ -22,21 +23,28 @@ def ingest(file_list,output_file_name, maskfile):
     maskfile is an iceshelf mask
     '''
     
-    # Load BedMachine ice mask.  This is unfortunately a bit slow...
-    # 0 = ocean, 1 = ice-free land, 2 = grounded ice, 3 = floating ice, 4 = lake Vostok
+    # Load BedMachine ice mask.  We use KD-Trees to do a nearest-neighbor search. The cKDTree takes about 90s to generate.  
+    # Check to see if this is already done... much faster to make it once and then load it everytime it's needed
+    print('Working on the mask...')
+    ttstart=t.perf_counter()
     fh = Dataset(maskfile, mode='r')
     x = fh.variables['x'][:]
     y = np.flipud(fh.variables['y'][:])
-    mask = np.flipud(fh.variables['mask'][:])
-
-    def ice_mask_nearest (x0, y0):
-        xi = np.abs(x-x0).argmin()
-        yi = np.abs(y-y0).argmin()
-        return mask[yi,xi]
+    mask = np.flipud(fh.variables['mask'][:]) # 0 = ocean, 1 = ice-free land, 2 = grounded ice, 3 = floating ice
+    
+    kdt_file = 'bma-v2-ckdt.pickle'
+    if os.path.exists(kdt_file):
+        with open(kdt_file, 'rb') as handle:
+            tree = pickle.load(handle)
+    else:
+        (xm,ym) = np.meshgrid(x,y)
+        tree = cKDTree( np.column_stack((xm.flatten(), ym.flatten())) )    
+        pickle.dump( tree, open(kdt_file,'wb') )
+    print('     Mask done after %f s'%(t.perf_counter()-ttstart))
     
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3031")
     
-    ttstart = datetime.now()
+    ttstart = t.perf_counter()
     
     atl06_data = {"lat":list(),"lon":list(),"h":list(),"azimuth":list(),
                   "h_sig":list(),"rgt":list(),"time":list(), #"acquisition_number":list(),
@@ -45,33 +53,50 @@ def ingest(file_list,output_file_name, maskfile):
     if any(f.startswith('s3') for f in file_list):
         import s3fs
     
-    for f in file_list:
-        print(f)
+    starting_time_for_files = t.perf_counter()
+    for f,i in zip(file_list,range(0,len(file_list))):
+        if i>0:
+            percent_finished=i/len(file_list)
+            dt = t.perf_counter()-starting_time_for_files
+            time_remaining = dt/percent_finished
+            print('%f percent done.  Remaining time is %f s'%(100*percent_finished,time_remaining))
         if f.startswith('s3'):
             s3 = s3fs.S3FileSystem(anon=True)
-            print('Moving $s S3->EBS'%f)
-            s3.get(f, './temp.h5')
-            fid =h5py.File(s3.open(f,'rb'),'r')
+            print('Moving File %d S3->EBS ...'%i)
+            open_this = './temp.h5'
+            try:
+                s3.get(f, open_this)
+            except FileNotFoundError:
+                print('WARNING:  FILE NOT FOUND')
+            
+            ttend = t.perf_counter()
+            print('     Time to move file: ', ttend - ttstart)
+            ttstart = t.perf_counter()
+            
         else:
-            fid = h5py.File(f, mode='r')
+            open_this = f
+            print('     Opened local file.')
+            
+        fid = h5py.File(open_this, mode='r')
 
         for lr in ("l","r"):
             for i in range(1,4):
                 try:
-                    data = fid['/']
-                    h_xatc = fid['gt%i%s/land_ice_segments/ground_track/x_atc'%(i,lr)][:]
-                    h_li = fid['gt%i%s/land_ice_segments/h_li'%(i,lr)][:]
-                    h_lat = fid['gt%i%s/land_ice_segments/latitude'%(i,lr)][:]
-                    h_lon = fid['gt%i%s/land_ice_segments/longitude'%(i,lr)][:]
-                    h_li_sigma = fid['gt%i%s/land_ice_segments/h_li_sigma'%(i,lr)][:]
-                    seg_az = fid['gt%i%s/land_ice_segments/ground_track/seg_azimuth'%(i,lr)][:]
+                    h_xatc =     np.array(fid['gt%i%s/land_ice_segments/ground_track/x_atc'%(i,lr)][:])
+                    h_li =       np.array(fid['gt%i%s/land_ice_segments/h_li'%(i,lr)][:])
+                    h_lat =      np.array(fid['gt%i%s/land_ice_segments/latitude'%(i,lr)][:])
+                    h_lon =      np.array(fid['gt%i%s/land_ice_segments/longitude'%(i,lr)][:])
+                    h_li_sigma = np.array(fid['gt%i%s/land_ice_segments/h_li_sigma'%(i,lr)][:])
+                    seg_az =     np.array(fid['gt%i%s/land_ice_segments/ground_track/seg_azimuth'%(i,lr)][:])
+                    quality =    np.array(fid['gt%i%s/land_ice_segments/atl06_quality_summary'%(i,lr)][:])
+                    geoid =      np.array(fid['/gt%i%s/land_ice_segments/dem/geoid_h'%(i,lr)][:])
+                    
                     rgt = fid['/orbit_info/rgt'][0]
-                    quality = fid['gt%i%s/land_ice_segments/atl06_quality_summary'%(i,lr)][:]
                     time = dparser.parse( fid['/ancillary_data/data_start_utc'][0] ,fuzzy=True )
                     beam = "%i%s"%(i,lr)
-                    geoid = fid['/gt%i%s/land_ice_segments/dem/geoid_h'%(i,lr)][:]
+                    
                     [h_x,h_y] = transformer.transform( h_lat , h_lon )
-
+                    
                 except KeyError:
                     print("wtf key error")
                     continue
@@ -82,29 +107,44 @@ def ingest(file_list,output_file_name, maskfile):
 #                     continue
 
                 # Only add the point if is in the ice shelf mask
-                this_mask = [float(ice_mask_nearest(XX,YY)) for XX,YY in zip(h_x,h_y)]
-            
-                atl06_data["lat"].append( np.array([h_lat[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["lon"].append( np.array([h_lon[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["x"].append( np.array([h_x[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["y"].append( np.array([h_y[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["h_sig"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["h"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["azimuth"].append( np.array([seg_az[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+                nothing, inds = this_mask = tree.query(np.column_stack((h_x,h_y)), k = 1)
+                this_mask = np.array(mask.flatten()[inds])
+        
+                atl06_data["lat"].append( h_lat[np.where(this_mask==3)] )
+                atl06_data["lon"].append( h_lon[np.where(this_mask==3)] )
+                atl06_data["x"].append( h_x[np.where(this_mask==3)] )
+                atl06_data["y"].append( h_y[np.where(this_mask==3)] )
+                atl06_data["h"].append( h_li[np.where(this_mask==3)] )
+                atl06_data["h_sig"].append( h_li_sigma[np.where(this_mask==3)] )
+                atl06_data["azimuth"].append( seg_az[np.where(this_mask==3)] )
+                atl06_data["quality"].append( quality[np.where(this_mask==3)] )
+                atl06_data["x_atc"].append( h_xatc[np.where(this_mask==3)] )
+                atl06_data["geoid"].append( geoid[np.where(this_mask==3)] )
+                
                 atl06_data["rgt"].append( rgt )
                 atl06_data["time"].append( time )
                 atl06_data["beam"].append ( beam )
-                atl06_data["quality"].append ( np.array([quality[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["x_atc"].append( np.array([h_xatc[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                atl06_data["geoid"].append( np.array([geoid[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+            
+#                 atl06_data["lat"].append( np.array([h_lat[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["lon"].append( np.array([h_lon[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["x"].append( np.array([h_x[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["y"].append( np.array([h_y[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["h_sig"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["h"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["azimuth"].append( np.array([seg_az[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["quality"].append ( np.array([quality[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["x_atc"].append( np.array([h_xatc[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
+#                 atl06_data["geoid"].append( np.array([geoid[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
                 
-                ttend = datetime.now()
-                print('Time to read this H5 file: ', ttend - ttstart)
+        ttend = t.perf_counter()
+        print('     Time to process file: ', ttend - ttstart)
+        ttstart = t.perf_counter()
+                
         fid.close()
         if f.startswith('s3'):
             os.remove('./temp.h5')
 
-    ttend = datetime.now()
+    ttend = t.perf_counter()
     print('Time to read the H5 files: ', ttend - ttstart)
 
     # Store data (serialize)
@@ -234,7 +274,7 @@ def get_rifts(atl06_data):
     }
 
 
-    ttstart = datetime.now()
+    ttstart = t.perf_counter()
 
     for i, row in atl06_dataframe.iterrows():
 
@@ -288,7 +328,7 @@ def get_rifts(atl06_data):
         rift_obs['lat'] = lat
         rift_obs['lon'] = lon
 
-    ttend = datetime.now()
+    ttend = t.perf_counter()
     print(' ')
     print('Found %i rifts.'%len(rift_obs["width"]))
     print('Time to detect rifts:', ttend - ttstart)
