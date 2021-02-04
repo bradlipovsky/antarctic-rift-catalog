@@ -45,6 +45,7 @@ def ingest(file_list,output_file_name, maskfile):
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3031")
     
     ttstart = t.perf_counter()
+    t0 = ttstart
     
     atl06_data = {"lat":list(),"lon":list(),"h":list(),"azimuth":list(),
                   "h_sig":list(),"rgt":list(),"time":list(), #"acquisition_number":list(),
@@ -58,8 +59,9 @@ def ingest(file_list,output_file_name, maskfile):
         if i>0:
             percent_finished=i/len(file_list)
             dt = t.perf_counter()-starting_time_for_files
-            time_remaining = dt/percent_finished
-            print('%f percent done.  Remaining time is %f s'%(100*percent_finished,time_remaining))
+            wt =  t.perf_counter() - t0
+            time_remaining = dt/percent_finished - wt
+            print('%f percent done.  Remaining time is %f s. Wall time is %f s.'%(100*percent_finished,time_remaining,wt))
         if f.startswith('s3'):
             s3 = s3fs.S3FileSystem(anon=True)
             print('Moving File %d S3->EBS ...'%i)
@@ -68,6 +70,7 @@ def ingest(file_list,output_file_name, maskfile):
                 s3.get(f, open_this)
             except FileNotFoundError:
                 print('WARNING:  FILE NOT FOUND')
+                continue
             
             ttend = t.perf_counter()
             print('     Time to move file: ', ttend - ttstart)
@@ -109,7 +112,18 @@ def ingest(file_list,output_file_name, maskfile):
                 # Only add the point if is in the ice shelf mask
                 nothing, inds = this_mask = tree.query(np.column_stack((h_x,h_y)), k = 1)
                 this_mask = np.array(mask.flatten()[inds])
-        
+            
+#                 atl06_data["lat"].append( h_lat )
+#                 atl06_data["lon"].append( h_lon )
+#                 atl06_data["x"].append( h_x )
+#                 atl06_data["y"].append( h_y )
+#                 atl06_data["h"].append( h_li )
+#                 atl06_data["h_sig"].append( h_li_sigma )
+#                 atl06_data["azimuth"].append( seg_az )
+#                 atl06_data["quality"].append( quality )
+#                 atl06_data["x_atc"].append( h_xatc )
+#                 atl06_data["geoid"].append( geoid )
+            
                 atl06_data["lat"].append( h_lat[np.where(this_mask==3)] )
                 atl06_data["lon"].append( h_lon[np.where(this_mask==3)] )
                 atl06_data["x"].append( h_x[np.where(this_mask==3)] )
@@ -277,17 +291,21 @@ def get_rifts(atl06_data):
     ttstart = t.perf_counter()
 
     for i, row in atl06_dataframe.iterrows():
+        
+        if len(row["quality"]) == 0:
+            continue
 
+        # Only allow a certain percentage of data to be problematic
+        percent_low_quality = sum( row["quality"]==1 )  / len(row["quality"])
+        if percent_low_quality > 0.2:
+            continue
 
         # Data product is posted at 20m.  Allowing spacing to be up to 25m allows for some missing data but not much.
         spacing = (max(row['x_atc']) - min(row['x_atc'])) / len(row['h'])
         if spacing > 25:
             continue
             
-        # Only allow a certain percentage of data to be problematic
-        percent_low_quality = sum( row["quality"]==1 )  / len(row["quality"])
-        if percent_low_quality > 0.2:
-            continue
+
         
         # measure height relative to GEOID
         rift_list = find_the_rifts( row['h'] - row['geoid'] )
