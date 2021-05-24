@@ -8,8 +8,79 @@ import pickle
 import pandas as pd
 from netCDF4 import Dataset
 from scipy.spatial import cKDTree
-
 import matplotlib.pyplot as plt
+
+import pyTMD.time
+from pyTMD.read_tide_model import extract_tidal_constants
+from pyTMD.predict_tidal_ts import predict_tidal_ts
+from pyTMD.predict_tide import predict_tide
+from pyTMD.infer_minor_corrections import infer_minor_corrections
+
+
+def run_pyTMD(LAT,LON,TIME):
+    # LAT, LON can be vectors, TIME is a scalar
+    # 0 < LON < 360
+    # output is vector of tide height in meters
+
+    tide_dir = './datasets/'
+
+    #-- calculate a weeks forecast every minute
+#     seconds = TIME.second + np.arange(0,1)
+    tide_time = pyTMD.time.convert_calendar_dates(TIME.year, TIME.month,
+        TIME.day, TIME.hour, TIME.minute, TIME.second)
+
+    #-- delta time (TT - UT1) file
+    delta_file = pyTMD.utilities.get_data_path(['data','merged_deltat.data'])
+
+    grid_file = os.path.join(tide_dir,'CATS2008','grid_CATS2008')
+    model_file = os.path.join(tide_dir,'CATS2008','hf.CATS2008.out')
+    model_format = 'OTIS'
+    EPSG = 'CATS2008'
+    TYPE = 'z'
+
+    #-- read tidal constants and interpolate to grid points
+#     for lo,la in zip(LON,LAT)
+    amp,ph,D,c = extract_tidal_constants(np.atleast_1d(LON),np.atleast_1d(LAT),
+        grid_file,model_file,EPSG,TYPE=TYPE,METHOD='spline',GRID=model_format)
+    deltat = np.zeros_like(tide_time)
+
+    #-- calculate complex phase in radians for Euler's
+    cph = -1j*ph*np.pi/180.0
+    #-- calculate constituent oscillation
+    hc = amp*np.exp(cph)
+
+    #-- convert time from MJD to days relative to Jan 1, 1992 (48622 MJD)
+    #-- predict tidal elevations at time 1 and infer minor corrections
+
+    TIDE = predict_tide(tide_time, hc, c,
+        DELTAT=deltat, CORRECTIONS=model_format)
+    MINOR = infer_minor_corrections(tide_time, hc, c,
+        DELTAT=deltat, CORRECTIONS=model_format)
+
+    TIDE.data[:] += MINOR.data[:]
+
+    return TIDE
+
+
+
+
+def get_coords(shelf_name):
+    ''' This is just a holding bin of shelf polygons'
+    '''
+    
+    # Format is WSNE
+    switcher = {
+        'brunt': [-27.8, -76.1, -0.001, -70.2], # Brunt-Riiser-Ekstrom System
+        'amery': [67.6, -72.44,74.87,-68.39],
+        'ap': [-83.5,-74.1,-54.2,-62.8],
+        'fimbul': [0.001,-71.5, 39.5, -68.6],
+        'ross': [159,-86,-147,-69],
+        'ronne': [-80,-82,-28,-74.5],
+        'amundsen':[-147,-75.5,-83.5,-71.5],
+        'east':[80,-70,159,-64]
+    }
+        
+    return switcher[shelf_name]
 
 def ingest(file_list,output_file_name, maskfile):
     '''
@@ -32,11 +103,13 @@ def ingest(file_list,output_file_name, maskfile):
     y = np.flipud(fh.variables['y'][:])
     mask = np.flipud(fh.variables['mask'][:]) # 0 = ocean, 1 = ice-free land, 2 = grounded ice, 3 = floating ice
     
-    kdt_file = 'bma-v2-ckdt.pickle'
+    kdt_file = 'datasets/BedMachine2-ckdt.pickle'
     if os.path.exists(kdt_file):
+        print('     Loading existing ckdt.')
         with open(kdt_file, 'rb') as handle:
             tree = pickle.load(handle)
     else:
+        print('     Constructing new ckdt.')
         (xm,ym) = np.meshgrid(x,y)
         tree = cKDTree( np.column_stack((xm.flatten(), ym.flatten())) )    
         pickle.dump( tree, open(kdt_file,'wb') )
@@ -49,8 +122,9 @@ def ingest(file_list,output_file_name, maskfile):
     
     atl06_data = {"lat":list(),"lon":list(),"h":list(),"azimuth":list(),
                   "h_sig":list(),"rgt":list(),"time":list(), #"acquisition_number":list(),
-                  "x":list(), "y":list(), "beam":list(), "quality":list(), "x_atc":list(), "geoid":list() }
-    
+                  "x":list(), "y":list(), "beam":list(), "quality":list(), "x_atc":list(), "geoid":list(),
+                  "tide":list()}
+        
     if any(f.startswith('s3') for f in file_list):
         import s3fs
     
@@ -93,12 +167,15 @@ def ingest(file_list,output_file_name, maskfile):
                     seg_az =     np.array(fid['gt%i%s/land_ice_segments/ground_track/seg_azimuth'%(i,lr)][:])
                     quality =    np.array(fid['gt%i%s/land_ice_segments/atl06_quality_summary'%(i,lr)][:])
                     geoid =      np.array(fid['/gt%i%s/land_ice_segments/dem/geoid_h'%(i,lr)][:])
+
                     
                     rgt = fid['/orbit_info/rgt'][0]
                     time = dparser.parse( fid['/ancillary_data/data_start_utc'][0] ,fuzzy=True )
                     beam = "%i%s"%(i,lr)
                     
                     [h_x,h_y] = transformer.transform( h_lat , h_lon )
+                    
+                    tide =       run_pyTMD(h_lat,h_lon,time)
                     
                 except KeyError:
                     print("wtf key error")
@@ -138,6 +215,8 @@ def ingest(file_list,output_file_name, maskfile):
                 atl06_data["rgt"].append( rgt )
                 atl06_data["time"].append( time )
                 atl06_data["beam"].append ( beam )
+                
+                atl06_data["tide"].append ( tide )
             
 #                 atl06_data["lat"].append( np.array([h_lat[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
 #                 atl06_data["lon"].append( np.array([h_lon[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
@@ -173,12 +252,12 @@ def ingest(file_list,output_file_name, maskfile):
         
         
 def find_the_rifts(trace):
-    #
-    # find_the_rifts(trace) where trace is an array of surface heights
-    # returns a list of indices into trace ((start1,stop1),...
-    # where all consecutive values between trace[starti:stopi] are less
-    # than a threshold value
-    #
+    '''
+    Find_the_rifts(trace) where trace is an array of surface heights
+    returns a list of indices into trace ((start1,stop1),...
+    where all consecutive values between trace[starti:stopi] are less
+    than a threshold value
+    '''
     
     # Threshold height for detection as a rift
     upper_thr = 5
@@ -319,7 +398,8 @@ def get_rifts(atl06_data):
             for rift_coords in rift_list:
                 rift_azi.append ( row['azimuth'][rift_coords[0]:rift_coords[1]].mean()   )
                 rift_sig.append ( row['h_sig'][rift_coords[0]:rift_coords[1]].mean()  )
-                rift_h.append   ( row['h'][rift_coords[0]:rift_coords[1]].mean()  )
+                rift_h.append   ( row['h'][rift_coords[0]:rift_coords[1]].mean() - \
+                                  row['geoid'][rift_coords[0]:rift_coords[1]].mean())
             
             output = convert_to_centroid(rift_list,row['x'],row['y'])
             output=pd.DataFrame(output)
