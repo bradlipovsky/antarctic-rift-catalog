@@ -9,6 +9,8 @@ import pandas as pd
 from netCDF4 import Dataset
 from scipy.spatial import cKDTree
 import matplotlib.pyplot as plt
+from multiprocessing import Pool
+from functools import partial
 
 import pyTMD.time
 from pyTMD.read_tide_model import extract_tidal_constants
@@ -17,23 +19,109 @@ from pyTMD.predict_tide import predict_tide
 from pyTMD.infer_minor_corrections import infer_minor_corrections
 
 
-def run_pyTMD(LAT,LON,TIME):
+def ingest(file_list,output_file_name, datapath,verbose=False):
+    '''
+    Organize a bunch of ATL06 H5 files and save the result.  Rejects all non-ice shelf data points.
+    
+    file_list is the list of files.  If the files are stored in an AWS S3 bucket then they will be copied to the 
+        local directory, read, and then discarded.
+        
+    output_file_name is the name of the file where the output structure is stored
+    
+    maskfile is an iceshelf mask
+    '''
+    dataset_path = datapath + 'datasets/'
+    maskfile = 'BedMachineAntarctica_2020-07-15_v02.nc'
+    kdt_file = 'BedMachine2-ckdt.pkl'
+    
+    '''
+    Load BedMachine ice mask.  We use KD-Trees to do a nearest-neighbor search. 
+    The cKDTree takes about 90s to generate... much faster to make it once and 
+    then load it everytime it's needed
+    '''
+    print('Working on the mask...')
+    ttstart=t.perf_counter()
+    fh = Dataset(dataset_path+maskfile, mode='r')
+    x = fh.variables['x'][:]
+    y = np.flipud(fh.variables['y'][:])
+    
+    # 0 = ocean, 1 = ice-free land, 2 = grounded ice, 3 = floating ice
+    mask = np.flipud(fh.variables['mask'][:]) 
+    
+    if os.path.exists(dataset_path+kdt_file):
+        print('     Loading existing ckdt.')
+        with open(dataset_path+kdt_file,'rb') as handle:
+            tree = pickle.load(handle)
+            
+    else:
+        print('     Constructing new ckdt.')
+        (xm,ym) = np.meshgrid(x,y)
+        tree = cKDTree( np.column_stack((xm.flatten(), ym.flatten())) )    
+        pickle.dump( tree, open(dataset_path+kdt_file,'wb') )
+    print('     Mask loaded after %f s'%(t.perf_counter()-ttstart))
+    
+
+    '''
+    Read all the files in parallel.  Note that partial can't accept any arguments that can't be pickled.
+    For this reason, we have to do the mask calculations later (the KD-Tree can't be pickled.
+    '''
+    ttstart = t.perf_counter()
+    func = partial(load_one_file, datapath,verbose)
+    nproc = 8
+    with Pool(nproc) as p:
+        atl06_data = p.map(func, file_list)
+    df = pd.DataFrame(atl06_data)
+    print('Time to read the H5 files: ', t.perf_counter() - ttstart)
+
+    '''
+    Apply the ice mask
+    '''
+    ttstart = t.perf_counter()
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3031")
+    df_mask = df.apply (lambda row: apply_mask(row,transformer,tree,mask), axis=1)
+    output = pd.DataFrame(list(df_mask))
+    output.dropna(inplace=True)
+    print('Time to apply ice shelf mask: ', t.perf_counter() - ttstart)
+    
+    '''
+    Calculate tides
+    '''
+#     output['tide'] = run_pyTMD(output['lat'],output['lon'],output['time'],dataset_path)
+
+    '''
+    Write to file
+    '''
+    ttstart = t.perf_counter()
+    with open(output_file_name, 'wb') as handle:
+        pickle.dump(output, handle)
+    print('Time to save all of the data: ', t.perf_counter() - ttstart)
+    
+def run_pyTMD(row,TIDE_PATH):
     # LAT, LON can be vectors, TIME is a scalar
     # 0 < LON < 360
     # output is vector of tide height in meters
+    
+    LAT = row['lat']
+    LON = row['lon']
+    TIME = row['time']
+    print(len(LAT))
 
-    tide_dir = './datasets/'
+    tide_dir = TIDE_PATH
 
     #-- calculate a weeks forecast every minute
 #     seconds = TIME.second + np.arange(0,1)
-    tide_time = pyTMD.time.convert_calendar_dates(TIME.year, TIME.month,
-        TIME.day, TIME.hour, TIME.minute, TIME.second)
+    tide_time = pyTMD.time.convert_calendar_dates(TIME.year, 
+                                                  TIME.month,
+                                                  TIME.day, 
+                                                  TIME.hour, 
+                                                  TIME.minute, 
+                                                  TIME.second)
 
     #-- delta time (TT - UT1) file
     delta_file = pyTMD.utilities.get_data_path(['data','merged_deltat.data'])
 
-    grid_file = os.path.join(tide_dir,'CATS2008','grid_CATS2008')
-    model_file = os.path.join(tide_dir,'CATS2008','hf.CATS2008.out')
+    grid_file = os.path.join(tide_dir,'grid_CATS2008')
+    model_file = os.path.join(tide_dir,'hf.CATS2008.out')
     model_format = 'OTIS'
     EPSG = 'CATS2008'
     TYPE = 'z'
@@ -82,169 +170,66 @@ def get_coords(shelf_name):
         
     return switcher[shelf_name]
 
-def ingest(file_list,output_file_name, maskfile):
+
+def apply_mask(row,transformer,tree,mask):
     '''
-    Organize a bunch of ATL06 H5 files and save the result.  Rejects all non-ice shelf data points.
-    
-    file_list is the list of files.  If the files are stored in an AWS S3 bucket then they will be copied to the 
-        local directory, read, and then discarded.
-        
-    output_file_name is the name of the pickle file where the output structure is stored
-    
-    maskfile is an iceshelf mask
+    Apply the ice shelf mask to each row.
     '''
+
+    [h_x,h_y] = transformer.transform( row.lat , row.lon )
+    if isinstance(h_x,float): 
+        return {}
+    nothing, inds = tree.query(np.column_stack((h_x,h_y)), k = 1, workers=2)
+    this_mask = np.array(mask.flatten()[inds])
     
-    # Load BedMachine ice mask.  We use KD-Trees to do a nearest-neighbor search. The cKDTree takes about 90s to generate.  
-    # Check to see if this is already done... much faster to make it once and then load it everytime it's needed
-    print('Working on the mask...')
-    ttstart=t.perf_counter()
-    fh = Dataset(maskfile, mode='r')
-    x = fh.variables['x'][:]
-    y = np.flipud(fh.variables['y'][:])
-    mask = np.flipud(fh.variables['mask'][:]) # 0 = ocean, 1 = ice-free land, 2 = grounded ice, 3 = floating ice
-    
-    kdt_file = 'datasets/BedMachine2-ckdt.pickle'
-    if os.path.exists(kdt_file):
-        print('     Loading existing ckdt.')
-        with open(kdt_file, 'rb') as handle:
-            tree = pickle.load(handle)
-    else:
-        print('     Constructing new ckdt.')
-        (xm,ym) = np.meshgrid(x,y)
-        tree = cKDTree( np.column_stack((xm.flatten(), ym.flatten())) )    
-        pickle.dump( tree, open(kdt_file,'wb') )
-    print('     Mask done after %f s'%(t.perf_counter()-ttstart))
-    
-    transformer = Transformer.from_crs("EPSG:4326", "EPSG:3031")
-    
-    ttstart = t.perf_counter()
-    t0 = ttstart
-    
-    atl06_data = {"lat":list(),"lon":list(),"h":list(),"azimuth":list(),
-                  "h_sig":list(),"rgt":list(),"time":list(), #"acquisition_number":list(),
-                  "x":list(), "y":list(), "beam":list(), "quality":list(), "x_atc":list(), "geoid":list(),
-                  "tide":list()}
-        
-    if any(f.startswith('s3') for f in file_list):
-        import s3fs
-    
-    starting_time_for_files = t.perf_counter()
-    for f,i in zip(file_list,range(0,len(file_list))):
-        if i>0:
-            percent_finished=i/len(file_list)
-            dt = t.perf_counter()-starting_time_for_files
-            wt =  t.perf_counter() - t0
-            time_remaining = dt/percent_finished - wt
-            print('%f percent done.  Remaining time is %f s. Wall time is %f s.'%(100*percent_finished,time_remaining,wt))
-        if f.startswith('s3'):
-            s3 = s3fs.S3FileSystem(anon=True)
-            print('Moving File %d S3->EBS ...'%i)
-            open_this = './temp.h5'
+    new_row = {}
+    new_row['x'] = h_x[np.where(this_mask==3)]
+    new_row['y'] = h_y[np.where(this_mask==3)]
+    for key in ("x_atc","h","lat","lon","azimuth","quality","geoid","h_sig"):
+        new_row[key] = row[key][np.where(this_mask==3)]
+    new_row['rgt'] = row['rgt']
+    new_row['time'] = row['time']
+    new_row['beam'] = row['beam']
+
+    return new_row
+
+
+def load_one_file(datapath,verbose,f):
+    if verbose:
+        print('     Opening local file %s'%f)
+    try:
+        fid = h5py.File(datapath + f, mode='r')
+    except FileNotFoundError:
+        print (     'ERROR: File not found,  %s'%f)
+        return {}
+
+    for lr in ("l","r"):
+        for i in range(1,4):
             try:
-                s3.get(f, open_this)
-            except FileNotFoundError:
-                print('WARNING:  FILE NOT FOUND')
-                continue
-            
-            ttend = t.perf_counter()
-            print('     Time to move file: ', ttend - ttstart)
-            ttstart = t.perf_counter()
-            
-        else:
-            open_this = f
-            print('     Opened local file.')
-            
-        fid = h5py.File(open_this, mode='r')
-
-        for lr in ("l","r"):
-            for i in range(1,4):
-                try:
-                    h_xatc =     np.array(fid['gt%i%s/land_ice_segments/ground_track/x_atc'%(i,lr)][:])
-                    h_li =       np.array(fid['gt%i%s/land_ice_segments/h_li'%(i,lr)][:])
-                    h_lat =      np.array(fid['gt%i%s/land_ice_segments/latitude'%(i,lr)][:])
-                    h_lon =      np.array(fid['gt%i%s/land_ice_segments/longitude'%(i,lr)][:])
-                    h_li_sigma = np.array(fid['gt%i%s/land_ice_segments/h_li_sigma'%(i,lr)][:])
-                    seg_az =     np.array(fid['gt%i%s/land_ice_segments/ground_track/seg_azimuth'%(i,lr)][:])
-                    quality =    np.array(fid['gt%i%s/land_ice_segments/atl06_quality_summary'%(i,lr)][:])
-                    geoid =      np.array(fid['/gt%i%s/land_ice_segments/dem/geoid_h'%(i,lr)][:])
-
-                    
-                    rgt = fid['/orbit_info/rgt'][0]
-                    time = dparser.parse( fid['/ancillary_data/data_start_utc'][0] ,fuzzy=True )
-                    beam = "%i%s"%(i,lr)
-                    
-                    [h_x,h_y] = transformer.transform( h_lat , h_lon )
-                    
-                    tide =       run_pyTMD(h_lat,h_lon,time)
-                    
-                except KeyError:
-                    print("wtf key error")
-                    continue
-
-#             This is just used for Brunt:
-#                         Not clear why some of the data is out of the region of interest
-#                 if any(h_lon>0):
-#                     continue
-
-                # Only add the point if is in the ice shelf mask
-                nothing, inds = this_mask = tree.query(np.column_stack((h_x,h_y)), k = 1)
-                this_mask = np.array(mask.flatten()[inds])
-            
-#                 atl06_data["lat"].append( h_lat )
-#                 atl06_data["lon"].append( h_lon )
-#                 atl06_data["x"].append( h_x )
-#                 atl06_data["y"].append( h_y )
-#                 atl06_data["h"].append( h_li )
-#                 atl06_data["h_sig"].append( h_li_sigma )
-#                 atl06_data["azimuth"].append( seg_az )
-#                 atl06_data["quality"].append( quality )
-#                 atl06_data["x_atc"].append( h_xatc )
-#                 atl06_data["geoid"].append( geoid )
-            
-                atl06_data["lat"].append( h_lat[np.where(this_mask==3)] )
-                atl06_data["lon"].append( h_lon[np.where(this_mask==3)] )
-                atl06_data["x"].append( h_x[np.where(this_mask==3)] )
-                atl06_data["y"].append( h_y[np.where(this_mask==3)] )
-                atl06_data["h"].append( h_li[np.where(this_mask==3)] )
-                atl06_data["h_sig"].append( h_li_sigma[np.where(this_mask==3)] )
-                atl06_data["azimuth"].append( seg_az[np.where(this_mask==3)] )
-                atl06_data["quality"].append( quality[np.where(this_mask==3)] )
-                atl06_data["x_atc"].append( h_xatc[np.where(this_mask==3)] )
-                atl06_data["geoid"].append( geoid[np.where(this_mask==3)] )
+                out = {}
                 
-                atl06_data["rgt"].append( rgt )
-                atl06_data["time"].append( time )
-                atl06_data["beam"].append ( beam )
-                
-                atl06_data["tide"].append ( tide )
-            
-#                 atl06_data["lat"].append( np.array([h_lat[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-#                 atl06_data["lon"].append( np.array([h_lon[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-#                 atl06_data["x"].append( np.array([h_x[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-#                 atl06_data["y"].append( np.array([h_y[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-#                 atl06_data["h_sig"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-#                 atl06_data["h"].append( np.array([h_li[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-#                 atl06_data["azimuth"].append( np.array([seg_az[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-#                 atl06_data["quality"].append ( np.array([quality[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-#                 atl06_data["x_atc"].append( np.array([h_xatc[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-#                 atl06_data["geoid"].append( np.array([geoid[i] for i in range(len(h_li)) if this_mask[i] > 2] ) )
-                
-        ttend = t.perf_counter()
-        print('     Time to process file: ', ttend - ttstart)
-        ttstart = t.perf_counter()
-                
-        fid.close()
-        if f.startswith('s3'):
-            os.remove('./temp.h5')
+                out["x_atc"] =  np.array(fid['gt%i%s/land_ice_segments/ground_track/x_atc'%(i,lr)][:])
+                out["h"] =      np.array(fid['gt%i%s/land_ice_segments/h_li'%(i,lr)][:])
+                out["lat"] =    np.array(fid['gt%i%s/land_ice_segments/latitude'%(i,lr)][:])
+                out["lon"] =    np.array(fid['gt%i%s/land_ice_segments/longitude'%(i,lr)][:])
+                out["h_sig"] =  np.array(fid['gt%i%s/land_ice_segments/h_li_sigma'%(i,lr)][:])
+                out["azimuth"]= np.array(fid['gt%i%s/land_ice_segments/ground_track/seg_azimuth'%(i,lr)][:])
+                out["quality"]= np.array(fid['gt%i%s/land_ice_segments/atl06_quality_summary'%(i,lr)][:])
+                out["geoid"] =  np.array(fid['/gt%i%s/land_ice_segments/dem/geoid_h'%(i,lr)][:])
 
-    ttend = t.perf_counter()
-    print('Time to read the H5 files: ', ttend - ttstart)
+                out["rgt"] = fid['/orbit_info/rgt'][0]
+                out["time"] = dparser.parse( fid['/ancillary_data/data_start_utc'][0] ,fuzzy=True )
+                out["beam"] = "%i%s"%(i,lr)
 
-    # Store data (serialize)
-    with open(output_file_name, 'wb') as handle:
-        pickle.dump(atl06_data, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            except KeyError:
+                print("ERROR: Key error, %s"%f)
+
+    fid.close()
+    return out
+
+
         
-        
+
         
         
         
@@ -343,15 +328,13 @@ def get_rifts(atl06_data):
     '''
     arc.get_rifts 
     
-    INPUT: atl06_data, the dictionary of lists of ATL06 data (this format can easily be converted to a pandas dataframe).
-            Each "row" contains the data from a single ATL06 file, masked to the Antarctic Ice Shelves.
-            The keys of the dictionary are defined in arc.ingest().
+    INPUT: atl06_data, dataframe with each "row" being the data from a single ATL06 file, 
+            masked to the Antarctic Ice Shelves. The keys of the dictionary are defined in arc.ingest().
             
     OUTPUT: rift_obs, also a dictionary of lists, with each "row" corresponding to a single rift observation.  
             The dictionary keys are defined below.
     '''
 
-    atl06_dataframe = pd.DataFrame(atl06_data)
 
     rift_obs = {
         "x-centroid": [],
@@ -369,7 +352,7 @@ def get_rifts(atl06_data):
 
     ttstart = t.perf_counter()
 
-    for i, row in atl06_dataframe.iterrows():
+    for i, row in atl06_data.iterrows():
         
         if len(row["quality"]) == 0:
             continue
