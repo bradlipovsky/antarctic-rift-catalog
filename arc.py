@@ -35,6 +35,15 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     kdt_file = 'BedMachine2-ckdt.pkl'
     
     '''
+    Does the output file already exist?
+    '''
+    if os.path.isfile(atl06_file_name):
+        print("Data already saved, so there's no need to ingest data. \
+    To repeat the data ingest, it would probably be best to change the filename of the \
+    existing file.")
+        return
+    
+    '''
     Load BedMachine ice mask.  We use KD-Trees to do a nearest-neighbor search. 
     The cKDTree takes about 90s to generate... much faster to make it once and 
     then load it everytime it's needed
@@ -174,10 +183,10 @@ def get_coords(shelf_name):
     
     # Format is WSNE
     switcher = {
-        'brunt': [-27.8, -76.1, -0.001, -70.2], # Brunt-Riiser-Ekstrom System
+        'brunt': [-27.8, -76.1, -0.001, -69.6], # Brunt-Riiser-Ekstrom System
+        'fimbul': [0.001,-71.5, 39.5, -68.6],
         'amery': [67.6, -72.44,74.87,-68.39],
         'ap': [-83.5,-74.1,-54.2,-62.8],
-        'fimbul': [0.001,-71.5, 39.5, -68.6],
         'ross': [159,-86,-147,-69],
         'ronne': [-80,-82,-28,-74.5],
         'amundsen':[-147,-75.5,-83.5,-71.5],
@@ -385,7 +394,7 @@ def get_rifts(atl06_data):
 
         
         # measure height relative to GEOID
-        rift_list = find_the_rifts( row['h'] - row['geoid'] )
+        rift_list = find_the_rifts( row['h'] - row['geoid'] - row['tides'])
         
         
         if len(rift_list) > 0:
