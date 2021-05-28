@@ -74,6 +74,11 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     print('Time to read the H5 files: ', t.perf_counter() - ttstart)
 
     '''
+    Delete segments with less than ten data points
+    '''
+    df = df[ df['h'].map(np.size) >= 10]
+    
+    '''
     Apply the ice mask
     '''
     ttstart = t.perf_counter()
@@ -86,7 +91,16 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     '''
     Calculate tides
     '''
-#     output['tide'] = run_pyTMD(output['lat'],output['lon'],output['time'],dataset_path)
+    unpanda = output.to_dict('records')
+    ttstart = t.perf_counter()
+    nproc = 96
+    func = partial(run_pyTMD, dataset_path)
+    p = Pool(nproc)
+    pool_results = p.map(func, unpanda)
+    p.close()
+    p.join()
+    output['tides'] = pool_results
+    print('Calculated tides in %f s.'%(t.perf_counter() - ttstart))
 
     '''
     Write to file
@@ -96,7 +110,7 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
         pickle.dump(output, handle)
     print('Time to save all of the data: ', t.perf_counter() - ttstart)
     
-def run_pyTMD(row,TIDE_PATH):
+def run_pyTMD(TIDE_PATH,row):
     # LAT, LON can be vectors, TIME is a scalar
     # 0 < LON < 360
     # output is vector of tide height in meters
@@ -104,7 +118,9 @@ def run_pyTMD(row,TIDE_PATH):
     LAT = row['lat']
     LON = row['lon']
     TIME = row['time']
-    print(len(LAT))
+#     print('.')
+    if len(LAT) < 10:
+        return []
 
     tide_dir = TIDE_PATH
 
@@ -192,8 +208,7 @@ def apply_mask(row,transformer,tree,mask):
     new_row['beam'] = row['beam']
 
     return new_row
-
-
+    
 def load_one_file(datapath,verbose,f):
     if verbose:
         print('     Opening local file %s'%f)
