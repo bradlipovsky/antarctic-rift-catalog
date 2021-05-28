@@ -37,7 +37,7 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     '''
     Does the output file already exist?
     '''
-    if os.path.isfile(atl06_file_name):
+    if os.path.isfile(output_file_name):
         print("Data already saved, so there's no need to ingest data. \
     To repeat the data ingest, it would probably be best to change the filename of the \
     existing file.")
