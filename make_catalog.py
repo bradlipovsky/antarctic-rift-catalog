@@ -7,9 +7,10 @@ import json
 import pandas as pd
 import pickle
 
-shelf_names = ('brunt', 'fimbul', 'amery', 
-                'ap', 'ross', 'ronne', 'amundsen', 'east')
+#shelf_names = ('brunt', 'fimbul', 'amery', 
+#                'ap', 'ross', 'ronne', 'amundsen', 'east')
 
+shelf_names = ( 'ronne', 'amundsen', 'east')
 
 for shelf in shelf_names:
     
