@@ -12,13 +12,6 @@ import matplotlib.pyplot as plt
 from multiprocessing import Pool
 from functools import partial
 
-import pyTMD.time
-from pyTMD.read_tide_model import extract_tidal_constants
-from pyTMD.predict_tidal_ts import predict_tidal_ts
-from pyTMD.predict_tide import predict_tide
-from pyTMD.infer_minor_corrections import infer_minor_corrections
-
-
 def ingest(file_list,output_file_name, datapath,verbose=False):
     '''
     Organize a bunch of ATL06 H5 files and save the result.  Rejects all non-ice shelf data points.
@@ -30,6 +23,12 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     
     maskfile is an iceshelf mask
     '''
+    
+    import pyTMD.time
+    from pyTMD.read_tide_model import extract_tidal_constants
+    from pyTMD.predict_tidal_ts import predict_tidal_ts
+    from pyTMD.predict_tide import predict_tide
+    from pyTMD.infer_minor_corrections import infer_minor_corrections
     dataset_path = datapath + 'datasets/'
     maskfile = 'BedMachineAntarctica_2020-07-15_v02.nc'
     kdt_file = 'BedMachine2-ckdt.pkl'
