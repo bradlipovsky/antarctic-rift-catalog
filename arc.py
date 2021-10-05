@@ -11,6 +11,14 @@ from scipy.spatial import cKDTree
 import matplotlib.pyplot as plt
 from multiprocessing import Pool
 from functools import partial
+import warnings
+
+import pyTMD.time
+from pyTMD.read_tide_model import extract_tidal_constants
+from pyTMD.predict_tidal_ts import predict_tidal_ts
+from pyTMD.predict_tide import predict_tide
+from pyTMD.infer_minor_corrections import infer_minor_corrections
+
 
 def ingest(file_list,output_file_name, datapath,verbose=False):
     '''
@@ -24,11 +32,6 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     maskfile is an iceshelf mask
     '''
     
-    import pyTMD.time
-    from pyTMD.read_tide_model import extract_tidal_constants
-    from pyTMD.predict_tidal_ts import predict_tidal_ts
-    from pyTMD.predict_tide import predict_tide
-    from pyTMD.infer_minor_corrections import infer_minor_corrections
     dataset_path = datapath + 'datasets/'
     maskfile = 'BedMachineAntarctica_2020-07-15_v02.nc'
     kdt_file = 'BedMachine2-ckdt.pkl'
@@ -75,7 +78,11 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     '''
     ttstart = t.perf_counter()
     func = partial(load_one_file, datapath,verbose)
-    nproc = 8
+
+    pool = Pool()
+    nproc = pool._processes
+    print('Running on %d processors.'%nproc)
+
     with Pool(nproc) as p:
         atl06_data = p.map(func, file_list)
     df = pd.DataFrame(atl06_data)
@@ -101,7 +108,6 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     '''
     unpanda = output.to_dict('records')
     ttstart = t.perf_counter()
-    nproc = 96
     func = partial(run_pyTMD, dataset_path)
     p = Pool(nproc)
     pool_results = p.map(func, unpanda)
@@ -225,7 +231,10 @@ def load_one_file(datapath,verbose,f):
     except FileNotFoundError:
         print (     'ERROR: File not found,  %s'%f)
         return {}
-
+    except OSError as err:
+        print("OS error: {0}".format(err))
+        return {}
+    
     for lr in ("l","r"):
         for i in range(1,4):
             try:
@@ -401,11 +410,18 @@ def get_rifts(atl06_data):
             rift_azi = []
             rift_sig = []
             rift_h = []
-            for rift_coords in rift_list:
-                rift_azi.append ( row['azimuth'][rift_coords[0]:rift_coords[1]].mean()   )
-                rift_sig.append ( row['h_sig'][rift_coords[0]:rift_coords[1]].mean()  )
-                rift_h.append   ( row['h'][rift_coords[0]:rift_coords[1]].mean() - \
-                                  row['geoid'][rift_coords[0]:rift_coords[1]].mean())
+            
+            warnings.filterwarnings("error") # Treat warnings as errors just for this step 
+            try:
+                for rift_coords in rift_list:
+                    rift_azi.append ( row['azimuth'][rift_coords[0]:rift_coords[1]].mean()   )
+                    rift_sig.append ( row['h_sig'][rift_coords[0]:rift_coords[1]].mean()  )
+                    rift_h.append   ( row['h'][rift_coords[0]:rift_coords[1]].mean() - \
+                                      row['geoid'][rift_coords[0]:rift_coords[1]].mean())
+            except RuntimeWarning:
+                print('Abandoning this rift measurement (likely overflow from bad datapoint)')
+                continue
+            warnings.filterwarnings("default")
             
             output = convert_to_centroid(rift_list,row['x'],row['y'])
             output=pd.DataFrame(output)
