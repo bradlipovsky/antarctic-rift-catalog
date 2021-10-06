@@ -402,7 +402,12 @@ def get_rifts(atl06_data):
 
         
         # measure height relative to GEOID
-        rift_list = find_the_rifts( row['h'] - row['geoid'] - row['tides'])
+        try:
+            corrected_height = row['h'] - row['geoid'] - row['tides']
+        except ValueError:
+            print('Abandoning this rift measurement (likely mismatched array sizes)')
+            continue
+        rift_list = find_the_rifts( corrected_height )
         
         
         if len(rift_list) > 0:
