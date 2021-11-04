@@ -1,3 +1,5 @@
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 # Antarctic Rift Cataloger
 Detect rifts using the ICESat-2 ATL06 data product using the following workflow:
 
