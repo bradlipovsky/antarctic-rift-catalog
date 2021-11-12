@@ -496,11 +496,16 @@ def rift_cataloger(atl06_data,verbose=True):
         "confidence":[]
     } 
     
-    #ttstart = t.perf_counter()
+    ttstart = t.perf_counter()
     
     for i, row in atl06_data.iterrows():
         
+        #print(i)
+        
         if len(row["quality"]) == 0:
+            continue
+            
+        if len(row["h"]) < 10:
             continue
 
         # Only allow a certain percentage of data to be problematic
@@ -521,10 +526,6 @@ def rift_cataloger(atl06_data,verbose=True):
                             # This will have to change for different ice shelves
         run_mean_dist = 10000 # distance in m each side of the point
                               # to smooth over
-        #run_mean_dist_wall = 200 # distance in m ech side of point
-                                  # to smooth walls over for slope segment analysis
-                                  # (may or man not be necessary, but would avoid small interuptions
-                                  # breaking up an otherwise continuous increase/decrease)
         wall_threshold = 0.8 # fraction of running mean height (>0, <1) that the subset
                              # around the rift must reach, either side of the lowest point
                              # for it to be considered that rift walls have been found
@@ -588,7 +589,7 @@ def rift_cataloger(atl06_data,verbose=True):
         # and gross errors in ht and geoid using "bad_threshold"
         new_qual = np.where((ht>bad_threshold) | (ht<-bad_threshold) | (geoid>bad_threshold) | (geoid<-bad_threshold), 1, 0)
         #new_qual = qual
-        
+       
         #-----------------------------
         # calculate freeboard
         h = ht - geoid - tides
@@ -604,8 +605,12 @@ def rift_cataloger(atl06_data,verbose=True):
         azimuth = azimuth[new_qual==0]
         sigma = sigma[new_qual==0]
         
+        if len(h) < 10: #skip if following filtering there are <10 points
+            continue
+        
         #-----------------------------
         # calculate the running mean (smoothed surface)
+        
         spacing = (max(d) - min(d)) / len(d)
         run_mean_nr = round(run_mean_dist / spacing)
         h_run = pd.DataFrame(h).rolling((2*run_mean_nr)+1, min_periods=1, center=True).mean()
@@ -618,15 +623,11 @@ def rift_cataloger(atl06_data,verbose=True):
         # rifts near grounding line and calving front
         h_run_tied = pd.DataFrame(h).rolling((2*run_mean_nr)+1, min_periods=1, center=True).mean()
         h_run_tied = h_run_tied.values.flatten()
-        h_run_tied[0] = np.ma.getdata(h[0])
-        h_run_tied[len(h_run_tied)-1] = np.ma.getdata(h[len(h)-1])
-        
-        #-----------------------------
-        # calculate the running mean for slope segment analysis (wall finder)
-        #run_mean_nr_wall = round(run_mean_dist_wall / spacing)
-        #h_run_wall = pd.DataFrame(h).rolling((2*run_mean_nr_wall)+1, min_periods=1, center=True).mean()
-        #h_run_wall = h_run_wall.values.flatten()
-        
+        h_run_tied[0] = -99 #np.ma.getdata(h[0])
+        h_run_tied[len(h_run_tied)-1] = -99 #np.ma.getdata(h[len(h)-1])
+        # might need to come back to this, but tie the ends artificially low to ensure the rift definition
+        # does not exceed the dimensions of the trace
+    
         #-----------------------------
         # pass trace to rift detector
         # INPUTS (mandatory): h, h_run, d (surface height, running mean/smoothed surface height, distance)
@@ -678,7 +679,7 @@ def rift_cataloger(atl06_data,verbose=True):
                             rift_low_idx = int(np.where(h[rift_start:rift_end] == h[rift_start:rift_end].min()) + rift_start)
                             height_low   = h[rift_low_idx]
                             dist_low     = d[rift_low_idx]
-
+                            
                             #-----------------------------
                             # work outwards from the lowest point
                             # define subsets of the surface, smoothed surface and distance arrays
@@ -724,31 +725,28 @@ def rift_cataloger(atl06_data,verbose=True):
                                     #walls = np.where(h >= h_run)
                                     walls = np.where(h >= h_run_tied)
                                     walls = np.array(walls).flatten()
-
+                                    
                                     rift_start_idx = walls[walls.searchsorted(rift_low_idx,'right')-1]
                                     rift_end_idx = walls[walls.searchsorted(rift_low_idx,'right')]
                                     
                                     #-----------------------------
                                     # extract arrays for rift start to lowest point
                                     # and lowest point to rift end
-                                    h_sub_walls_before = h[rift_start_idx:rift_low_idx]
-                                    d_sub_walls_before = d[rift_start_idx:rift_low_idx]
-                                    x_sub_walls_before = x[rift_start_idx:rift_low_idx]
-                                    y_sub_walls_before = y[rift_start_idx:rift_low_idx]
-                                    #h_run_wall_sub_before = h_run_wall[rift_start_idx:rift_low_idx]
+                                    h_sub_walls_before = h[rift_start_idx:rift_low_idx+1]
+                                    d_sub_walls_before = d[rift_start_idx:rift_low_idx+1]
+                                    x_sub_walls_before = x[rift_start_idx:rift_low_idx+1]
+                                    y_sub_walls_before = y[rift_start_idx:rift_low_idx+1]
                                     mask_before = np.ma.getmask(h_sub_walls_before)
                                     
-                                    h_sub_walls_after = h[rift_low_idx+1:rift_end_idx+1]
-                                    d_sub_walls_after = d[rift_low_idx+1:rift_end_idx+1]
-                                    x_sub_walls_after = x[rift_low_idx+1:rift_end_idx+1]
-                                    y_sub_walls_after = y[rift_low_idx+1:rift_end_idx+1]
-                                    #h_run_wall_sub_after = h_run_wall[rift_low_idx+1:rift_end_idx]
+                                    h_sub_walls_after = h[rift_low_idx:rift_end_idx+1]
+                                    d_sub_walls_after = d[rift_low_idx:rift_end_idx+1]
+                                    x_sub_walls_after = x[rift_low_idx:rift_end_idx+1]
+                                    y_sub_walls_after = y[rift_low_idx:rift_end_idx+1]
                                     mask_after = np.ma.getmask(h_sub_walls_after)
 
                                     # threshold of half rift depth for finding walls
                                     updown_threshold = 0.5*(((h_run[rift_start_idx:rift_end_idx]).mean())-height_low)
 
-                                    #COMMENT OUT THIS SECTION IF USING h_run_wall_sub_before/after
                                     h_sub_walls_before = h_sub_walls_before[mask_before==False]
                                     d_sub_walls_before = d_sub_walls_before[mask_before==False]
                                     x_sub_walls_before = x_sub_walls_before[mask_before==False]
@@ -758,37 +756,39 @@ def rift_cataloger(atl06_data,verbose=True):
                                     x_sub_walls_after  = x_sub_walls_after[mask_after==False]
                                     y_sub_walls_after  = y_sub_walls_after[mask_after==False]
                                     
+                                    h_sub_walls_before_int = list(range(0,len(h_sub_walls_before)))
+                                    h_sub_walls_after_int = list(range(0,len(h_sub_walls_after)))
+                                    
                                     #-----------------------------
                                     # make sure there are a sufficient number of points in the walls
                                     # to calculate steepest slope location
-                                    if (len(h_sub_walls_before > 3)) & (len(h_sub_walls_after > 3)):
+                                    if (len(h_sub_walls_before) > 3)  & (len(h_sub_walls_after) > 3):
                                         #-----------------------------
                                         # find sections of the before array that are continuously going down
-
+                                        
                                         # initialise
-                                        down = np.zeros(len(h_sub_walls_before))
-                                        #down = np.zeros(len(h_run_wall_sub_before))
-                                        down[len(down)-1]=1
+                                        down = np.zeros(len(h_sub_walls_before)-1)
                                         down_h_diff = []
 
                                         # find adjacent heights that are descending (1)
-                                        for b in range (0,len(down)-1):
+                                        for b in range (0,len(down)):
                                             b1 = h_sub_walls_before[b+1]
                                             b2 = h_sub_walls_before[b]
-                                            #b1 = h_run_wall_sub_before[b+1]
-                                            #b2 = h_run_wall_sub_before[b]
                                             if b1 < b2:
                                                 down[b] = 1
-
+                                                
                                         down_regions = scipy.ndimage.find_objects(scipy.ndimage.label(down)[0])
-                                
+                                        
                                         # for each section that is continuously going down
                                         # calculate the height difference
                                         for down_region in down_regions:
-                                            down_h = h_sub_walls_before[down_region]
-                                            #down_h = h_run_wall_sub_before[down_region]
+                                            down_region = down_region[0]
+                                            down_h_start_idx = h_sub_walls_before_int[down_region][0]
+                                            down_h_end_temp = h_sub_walls_before_int[down_region][-1]
+                                            down_h_end_idx = h_sub_walls_before_int[down_h_end_temp]+2
+                                            down_h = h_sub_walls_before[down_h_start_idx:down_h_end_idx]
                                             down_h_diff.append(down_h[0] - down_h[len(down_h)-1])
-
+                                        
                                         # does anything exceed half of rift depth?
                                         # if so, the closest to the lowest point it probably the wall
                                         # else the wall is the section with the largest h decrease
@@ -800,39 +800,42 @@ def rift_cataloger(atl06_data,verbose=True):
                                             down_h_max_idx = np.where(down_h_diff==max(down_h_diff))
                                             down_h_max_idx = int((down_h_max_idx[0]).flatten())
 
+                                        down_selected_start_idx = h_sub_walls_before_int[down_regions[down_h_max_idx][0]][0]
+                                        down_selected_end_temp = h_sub_walls_before_int[down_regions[down_h_max_idx][0]][-1]
+                                        down_selected_end_idx = h_sub_walls_before_int[down_selected_end_temp] + 2
+                                            
                                         # subset arrays to the section identified as the rift wall
                                         # use these as the centers for the mini linear regression
-                                        h_array_downslope = h_sub_walls_before[down_regions[down_h_max_idx]]
-                                        d_array_downslope = d_sub_walls_before[down_regions[down_h_max_idx]]
-                                        x_array_downslope = x_sub_walls_before[down_regions[down_h_max_idx]]
-                                        y_array_downslope = y_sub_walls_before[down_regions[down_h_max_idx]]
+                                        h_array_downslope = h_sub_walls_before[down_selected_start_idx:down_selected_end_idx]
+                                        d_array_downslope = d_sub_walls_before[down_selected_start_idx:down_selected_end_idx]
+                                        x_array_downslope = x_sub_walls_before[down_selected_start_idx:down_selected_end_idx]
+                                        y_array_downslope = y_sub_walls_before[down_selected_start_idx:down_selected_end_idx]
                                         
                                         #-----------------------------
                                         # find sections of the array array that are continuously going up
 
                                         # initialise
-                                        up = np.zeros(len(h_sub_walls_after))
-                                        #up = np.zeros(len(h_run_wall_sub_after))
-                                        up[0]=1
+                                        up = np.zeros(len(h_sub_walls_after)-1)
                                         up_h_diff = []
 
                                         # find adjacent heights that are ascending (1)
-                                        for a in range (0,len(up)-1):
+                                        for a in range (0,len(up)):
                                             a1 = h_sub_walls_after[a]
                                             a2 = h_sub_walls_after[a+1]
-                                            #a1 = h_run_wall_sub_after[a]
-                                            #a2 = h_run_wall_sub_after[a+1]
                                             if a2 > a1:
-                                                up[a+1] = 1
+                                                up[a] = 1
 
                                         up_regions = scipy.ndimage.find_objects(scipy.ndimage.label(up)[0])
 
                                         # for each section that is continuously going up
                                         # calculate the height difference
                                         for up_region in up_regions:
-                                            up_h = h_sub_walls_after[up_region]
-                                            #up_h = h_run_wall_sub_after[up_region]
-                                            up_h_diff.append(up_h[len(up_h)-1] - up_h[0])
+                                            up_region = up_region[0]
+                                            up_h_start_idx = h_sub_walls_after_int[up_region][0]
+                                            up_h_end_temp = h_sub_walls_after_int[up_region][-1]
+                                            up_h_end_idx = h_sub_walls_after_int[up_h_end_temp]+2
+                                            up_h = h_sub_walls_after[up_h_start_idx:up_h_end_idx]
+                                            up_h_diff.append(up_h[len(up_h)-1] - up_h[0])  
 
                                         # does anything exceed half of rift depth?
                                         # if so, the closest to the lowest point it probably the wall
@@ -844,14 +847,18 @@ def rift_cataloger(atl06_data,verbose=True):
                                         else:
                                             up_h_max_idx = np.where(up_h_diff==max(up_h_diff))
                                             up_h_max_idx = int((up_h_max_idx[0]).flatten())
-
+                                        
+                                        up_selected_start_idx = h_sub_walls_after_int[up_regions[up_h_max_idx][0]][0]
+                                        up_selected_end_temp = h_sub_walls_after_int[up_regions[up_h_max_idx][0]][-1]
+                                        up_selected_end_idx = h_sub_walls_after_int[up_selected_end_temp] + 2
+                                        
                                         # subset arrays to the section identified as the rift wall
                                         # use these as the centers for the mini linear regression
-                                        h_array_upslope = h_sub_walls_after[up_regions[up_h_max_idx]]
-                                        d_array_upslope = d_sub_walls_after[up_regions[up_h_max_idx]]
-                                        x_array_upslope = x_sub_walls_after[up_regions[up_h_max_idx]]
-                                        y_array_upslope = y_sub_walls_after[up_regions[up_h_max_idx]]
-
+                                        h_array_upslope = h_sub_walls_after[up_selected_start_idx:up_selected_end_idx]
+                                        d_array_upslope = d_sub_walls_after[up_selected_start_idx:up_selected_end_idx]
+                                        x_array_upslope = x_sub_walls_after[up_selected_start_idx:up_selected_end_idx]
+                                        y_array_upslope = y_sub_walls_after[up_selected_start_idx:up_selected_end_idx]
+                                        
                                         #-----------------------------
                                         # perform mini linear regression over small distances to find
                                         # the steepest slopes of the array subsets defined as the rift walls
@@ -926,66 +933,89 @@ def rift_cataloger(atl06_data,verbose=True):
                                             rift_width = slope_up_d - slope_down_d
                                             if verbose == True:
                                                 print("rift width: "+str(round(rift_width,2))+" m")
-
-                                            #-----------------------------
-                                            # calculate the mean azimuth and h_sig of the rift
-
-                                            # first have to find the indices of the nearest points
-                                            # (because the mini liner regression values are assigned to the
-                                            # mean of the points in each calculation, which will not line up
-                                            # with input data)
-                                            az_start_idx = np.searchsorted(d,slope_down_d,side="left")
-                                            az_end_idx = np.searchsorted(d,slope_up_d,side="left")-1
-                                            rift_azimuth = azimuth[az_start_idx:az_end_idx].mean()
-                                            rift_sigma = sigma[az_start_idx:az_end_idx].mean()
-                                            rift_h = h[az_start_idx:az_end_idx].mean()
-
-                                            #-----------------------------
-                                            # append to list for output
-                                            rc = len(rift_obs["d_start"]) #rift_counter
-                                            
-                                            if rc > 0:
-                                                # if the beginning of the current rift
-                                                # is inside the bounds of the previous rift
-                                                if (i == rift_obs["data_row"][rc-1]) & \
-                                                (slope_down_d < rift_obs["d_end"][rc-1]):
-                                                    print(i)
-                                                    if rift_obs["d_start"][rc-1] > slope_down_d:
-                                                        rift_obs["d_start"][rc-1] = slope_down_d
-                                                        rift_obs["x_start"][rc-1] = slope_down_x
-                                                        rift_obs["y_start"][rc-1] = slope_down_y
-                                                    
-                                                    if rift_obs["d_end"][rc-1] < slope_up_d:
-                                                        rift_obs["d_end"][rc-1] = slope_up_d
-                                                        rift_obs["x_end"][rc-1] = slope_up_x
-                                                        rift_obs["y_end"][rc-1] = slope_up_y
-                                              
-                                                    rift_obs["x_centroid"][rc-1] = \
-                                                    (rift_obs["x_start"][rc-1] + rift_obs["x_end"][rc-1]) / 2
-                                                    rift_obs["y_centroid"][rc-1] = \
-                                                    (rift_obs["y_start"][rc-1] + rift_obs["y_end"][rc-1]) / 2
-                                                    
-                                                    [rift_centroid_lat,rift_centroid_lon] = \
-                                                    transformer.transform(rift_obs["x_centroid"][rc-1], \
-                                                                          rift_obs["y_centroid"][rc-1])
-                                                    
-                                                    rift_obs["lat_centroid"][rc-1] = rift_centroid_lat
-                                                    rift_obs["lon_centroid"][rc-1] = rift_centroid_lon
-                                                    
-                                                    rift_obs["width"][rc-1] = \
-                                                    rift_obs["d_end"][rc-1] - rift_obs["d_start"][rc-1]
                                                 
-                                                    az_start_idx = np.searchsorted(d,rift_obs["d_start"][rc-1],side="left")
-                                                    az_end_idx = np.searchsorted(d,rift_obs["d_end"][rc-1],side="left")-1
-                                            
-                                                    rift_azimuth = azimuth[az_start_idx:az_end_idx].mean()
-                                                    rift_sigma = sigma[az_start_idx:az_end_idx].mean()
-                                                    rift_h = h[az_start_idx:az_end_idx].mean()
+                                            if rift_width > 40: #platelet size
+
+                                                #-----------------------------
+                                                # calculate the mean azimuth and h_sig of the rift
+
+                                                # first have to find the indices of the nearest points
+                                                # (because the mini liner regression values are assigned to the
+                                                # mean of the points in each calculation, which will not line up
+                                                # with input data)
+                                                az_start_idx = np.searchsorted(d,slope_down_d,side="left")
+                                                az_end_idx = np.searchsorted(d,slope_up_d,side="left")-1
+                                                rift_azimuth = azimuth[az_start_idx:az_end_idx].mean()
+                                                rift_sigma = sigma[az_start_idx:az_end_idx].mean()
+                                                rift_h = h[az_start_idx:az_end_idx].mean()
+
+                                                #-----------------------------
+                                                # append to list for output
+                                                rc = len(rift_obs["d_start"]) #rift_counter
+
+                                                if rc > 0:
+                                                    # if the beginning of the current rift
+                                                    # is inside the bounds of the previous rift
+                                                    if (i == rift_obs["data_row"][rc-1]) & \
+                                                    (slope_down_d < rift_obs["d_end"][rc-1]):
                                                     
-                                                    rift_obs["azimuth"][rc-1] = rift_azimuth
-                                                    rift_obs["sigma"][rc-1] = rift_sigma
-                                                    rift_obs["h"][rc-1] = rift_h
-                                                
+                                                        if rift_obs["d_start"][rc-1] > slope_down_d:
+                                                            rift_obs["d_start"][rc-1] = slope_down_d
+                                                            rift_obs["x_start"][rc-1] = slope_down_x
+                                                            rift_obs["y_start"][rc-1] = slope_down_y
+
+                                                        if rift_obs["d_end"][rc-1] < slope_up_d:
+                                                            rift_obs["d_end"][rc-1] = slope_up_d
+                                                            rift_obs["x_end"][rc-1] = slope_up_x
+                                                            rift_obs["y_end"][rc-1] = slope_up_y
+
+                                                        rift_obs["x_centroid"][rc-1] = \
+                                                        (rift_obs["x_start"][rc-1] + rift_obs["x_end"][rc-1]) / 2
+                                                        rift_obs["y_centroid"][rc-1] = \
+                                                        (rift_obs["y_start"][rc-1] + rift_obs["y_end"][rc-1]) / 2
+
+                                                        [rift_centroid_lat,rift_centroid_lon] = \
+                                                        transformer.transform(rift_obs["x_centroid"][rc-1], \
+                                                                              rift_obs["y_centroid"][rc-1])
+
+                                                        rift_obs["lat_centroid"][rc-1] = rift_centroid_lat
+                                                        rift_obs["lon_centroid"][rc-1] = rift_centroid_lon
+
+                                                        rift_obs["width"][rc-1] = \
+                                                        rift_obs["d_end"][rc-1] - rift_obs["d_start"][rc-1]
+
+                                                        az_start_idx = np.searchsorted(d,rift_obs["d_start"][rc-1],side="left")
+                                                        az_end_idx = np.searchsorted(d,rift_obs["d_end"][rc-1],side="left")-1
+
+                                                        rift_azimuth = azimuth[az_start_idx:az_end_idx].mean()
+                                                        rift_sigma = sigma[az_start_idx:az_end_idx].mean()
+                                                        rift_h = h[az_start_idx:az_end_idx].mean()
+
+                                                        rift_obs["azimuth"][rc-1] = rift_azimuth
+                                                        rift_obs["sigma"][rc-1] = rift_sigma
+                                                        rift_obs["h"][rc-1] = rift_h
+
+                                                    else:
+                                                        rift_obs["d_start"].append(slope_down_d)
+                                                        rift_obs["d_end"].append(slope_up_d)
+                                                        rift_obs["x_start"].append(slope_down_x)
+                                                        rift_obs["y_start"].append(slope_down_y)
+                                                        rift_obs["x_end"].append(slope_up_x)
+                                                        rift_obs["y_end"].append(slope_up_y)
+                                                        rift_obs["x_centroid"].append(rift_centroid_x)
+                                                        rift_obs["y_centroid"].append(rift_centroid_y)
+                                                        rift_obs["lat_centroid"].append(rift_centroid_lat)
+                                                        rift_obs["lon_centroid"].append(rift_centroid_lon)
+                                                        rift_obs["width"].append(rift_width)
+                                                        rift_obs["time"].append(time)
+                                                        rift_obs["rgt"].append(rgt)
+                                                        rift_obs["azimuth"].append(rift_azimuth)
+                                                        rift_obs["sigma"].append(rift_sigma)
+                                                        rift_obs["h"].append(rift_h)
+                                                        rift_obs["beam"].append(beam)
+                                                        rift_obs["data_row"].append(i)
+                                                        rift_obs["confidence"].append("n/a")
+
                                                 else:
                                                     rift_obs["d_start"].append(slope_down_d)
                                                     rift_obs["d_end"].append(slope_up_d)
@@ -1006,28 +1036,12 @@ def rift_cataloger(atl06_data,verbose=True):
                                                     rift_obs["beam"].append(beam)
                                                     rift_obs["data_row"].append(i)
                                                     rift_obs["confidence"].append("n/a")
-                                               
-                                            else:    
-                                                rift_obs["d_start"].append(slope_down_d)
-                                                rift_obs["d_end"].append(slope_up_d)
-                                                rift_obs["x_start"].append(slope_down_x)
-                                                rift_obs["y_start"].append(slope_down_y)
-                                                rift_obs["x_end"].append(slope_up_x)
-                                                rift_obs["y_end"].append(slope_up_y)
-                                                rift_obs["x_centroid"].append(rift_centroid_x)
-                                                rift_obs["y_centroid"].append(rift_centroid_y)
-                                                rift_obs["lat_centroid"].append(rift_centroid_lat)
-                                                rift_obs["lon_centroid"].append(rift_centroid_lon)
-                                                rift_obs["width"].append(rift_width)
-                                                rift_obs["time"].append(time)
-                                                rift_obs["rgt"].append(rgt)
-                                                rift_obs["azimuth"].append(rift_azimuth)
-                                                rift_obs["sigma"].append(rift_sigma)
-                                                rift_obs["h"].append(rift_h)
-                                                rift_obs["beam"].append(beam)
-                                                rift_obs["data_row"].append(i)
-                                                rift_obs["confidence"].append("n/a")
-                                                                       
+                                            
+                                            else: #rift width <40, problem with wall finding
+                                                if verbose == True:
+                                                    print("skipping rift: rift width below platelet size")
+                                                    print("suggests wall finding error")
+                                        
                                         else: #couldn't calculate the the steepest slope on one or both walls
                                             if verbose == True:
                                                 print("skipping rift: insuffient points in the walls")
@@ -1074,10 +1088,14 @@ def rift_cataloger(atl06_data,verbose=True):
     #rift_obs = rift_obs.drop_duplicates()
     nr_rifts_final = len(rift_obs)
     
-    if verbose == True:
-        print("------------------------------")
-        print("")
-        print("rift detector found and measured a total of "+str(nr_rifts_final)+" rifts")
+    #if verbose == True:
+    print("------------------------------")
+    print("")
+    print("rift detector found and measured a total of "+str(nr_rifts_final)+" rifts")
+    
+    ttend = t.perf_counter()
+    print("")
+    print("time to detect rifts: "+str(round((ttend - ttstart)/60, 1))+" minutes")
     
     return(rift_obs)    
 
