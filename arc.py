@@ -266,8 +266,7 @@ def load_one_file(datapath,verbose,f):
 
 
 
-#------------------------------------------------------------------------------------------------------------------------------
-#below is stuff I'm working on
+
 
 def convert_to_centroid(rift_list,x,y):
     centroid_x = list()
@@ -287,12 +286,10 @@ def convert_to_centroid(rift_list,x,y):
         
     return rift_data
 
-#--------------------------------------------------------------------
 
 
-'''
-this is what I should be using
-'''
+
+
 
 def get_rifts(atl06_data):
     '''
@@ -307,8 +304,8 @@ def get_rifts(atl06_data):
 
 
     rift_obs = {
-        "x_centroid": [],
-        "y_centroid": [],
+        "x-centroid": [],
+        "y-centroid": [],
         "width": [],
         "time": [],
         "rgt": [],
@@ -475,16 +472,16 @@ def rift_cataloger(atl06_data,verbose=True):
             The dictionary keys are defined below.
     '''
     rift_obs = {
-        "d_start": [],
-        "d_end": [],
-        "x_start": [],
-        "y_start": [],
-        "x_end": [],
-        "y_end": [],
-        "x_centroid": [],
-        "y_centroid": [],
-        "lat_centroid": [],
-        "lon_centroid": [],
+        "d-start": [],
+        "d-end": [],
+        "x-start": [],
+        "y-start": [],
+        "x-end": [],
+        "y-end": [],
+        "x-centroid": [],
+        "y-centroid": [],
+        "lat-centroid": [],
+        "lon-centroid": [],
         "width": [],
         "time": [],
         "rgt": [],
@@ -951,41 +948,41 @@ def rift_cataloger(atl06_data,verbose=True):
 
                                                 #-----------------------------
                                                 # append to list for output
-                                                rc = len(rift_obs["d_start"]) #rift_counter
+                                                rc = len(rift_obs["d-start"]) #rift_counter
 
                                                 if rc > 0:
                                                     # if the beginning of the current rift
                                                     # is inside the bounds of the previous rift
                                                     if (i == rift_obs["data_row"][rc-1]) & \
-                                                    (slope_down_d < rift_obs["d_end"][rc-1]):
+                                                    (slope_down_d < rift_obs["d-end"][rc-1]):
                                                     
-                                                        if rift_obs["d_start"][rc-1] > slope_down_d:
-                                                            rift_obs["d_start"][rc-1] = slope_down_d
-                                                            rift_obs["x_start"][rc-1] = slope_down_x
-                                                            rift_obs["y_start"][rc-1] = slope_down_y
+                                                        if rift_obs["d-start"][rc-1] > slope_down_d:
+                                                            rift_obs["d-start"][rc-1] = slope_down_d
+                                                            rift_obs["x-start"][rc-1] = slope_down_x
+                                                            rift_obs["y-start"][rc-1] = slope_down_y
 
-                                                        if rift_obs["d_end"][rc-1] < slope_up_d:
-                                                            rift_obs["d_end"][rc-1] = slope_up_d
-                                                            rift_obs["x_end"][rc-1] = slope_up_x
-                                                            rift_obs["y_end"][rc-1] = slope_up_y
+                                                        if rift_obs["d-end"][rc-1] < slope_up_d:
+                                                            rift_obs["d-end"][rc-1] = slope_up_d
+                                                            rift_obs["x-end"][rc-1] = slope_up_x
+                                                            rift_obs["y-end"][rc-1] = slope_up_y
 
-                                                        rift_obs["x_centroid"][rc-1] = \
-                                                        (rift_obs["x_start"][rc-1] + rift_obs["x_end"][rc-1]) / 2
-                                                        rift_obs["y_centroid"][rc-1] = \
-                                                        (rift_obs["y_start"][rc-1] + rift_obs["y_end"][rc-1]) / 2
+                                                        rift_obs["x-centroid"][rc-1] = \
+                                                        (rift_obs["x-start"][rc-1] + rift_obs["x-end"][rc-1]) / 2
+                                                        rift_obs["y-centroid"][rc-1] = \
+                                                        (rift_obs["y-start"][rc-1] + rift_obs["y-end"][rc-1]) / 2
 
                                                         [rift_centroid_lat,rift_centroid_lon] = \
-                                                        transformer.transform(rift_obs["x_centroid"][rc-1], \
-                                                                              rift_obs["y_centroid"][rc-1])
+                                                        transformer.transform(rift_obs["x-centroid"][rc-1], \
+                                                                              rift_obs["y-centroid"][rc-1])
 
-                                                        rift_obs["lat_centroid"][rc-1] = rift_centroid_lat
-                                                        rift_obs["lon_centroid"][rc-1] = rift_centroid_lon
+                                                        rift_obs["lat-centroid"][rc-1] = rift_centroid_lat
+                                                        rift_obs["lon-centroid"][rc-1] = rift_centroid_lon
 
                                                         rift_obs["width"][rc-1] = \
-                                                        rift_obs["d_end"][rc-1] - rift_obs["d_start"][rc-1]
+                                                        rift_obs["d-end"][rc-1] - rift_obs["d-start"][rc-1]
 
-                                                        az_start_idx = np.searchsorted(d,rift_obs["d_start"][rc-1],side="left")
-                                                        az_end_idx = np.searchsorted(d,rift_obs["d_end"][rc-1],side="left")-1
+                                                        az_start_idx = np.searchsorted(d,rift_obs["d-start"][rc-1],side="left")
+                                                        az_end_idx = np.searchsorted(d,rift_obs["d-end"][rc-1],side="left")-1
 
                                                         rift_azimuth = azimuth[az_start_idx:az_end_idx].mean()
                                                         rift_sigma = sigma[az_start_idx:az_end_idx].mean()
@@ -996,16 +993,16 @@ def rift_cataloger(atl06_data,verbose=True):
                                                         rift_obs["h"][rc-1] = rift_h
 
                                                     else:
-                                                        rift_obs["d_start"].append(slope_down_d)
-                                                        rift_obs["d_end"].append(slope_up_d)
-                                                        rift_obs["x_start"].append(slope_down_x)
-                                                        rift_obs["y_start"].append(slope_down_y)
-                                                        rift_obs["x_end"].append(slope_up_x)
-                                                        rift_obs["y_end"].append(slope_up_y)
-                                                        rift_obs["x_centroid"].append(rift_centroid_x)
-                                                        rift_obs["y_centroid"].append(rift_centroid_y)
-                                                        rift_obs["lat_centroid"].append(rift_centroid_lat)
-                                                        rift_obs["lon_centroid"].append(rift_centroid_lon)
+                                                        rift_obs["d-start"].append(slope_down_d)
+                                                        rift_obs["d-end"].append(slope_up_d)
+                                                        rift_obs["x-start"].append(slope_down_x)
+                                                        rift_obs["y-start"].append(slope_down_y)
+                                                        rift_obs["x-end"].append(slope_up_x)
+                                                        rift_obs["y-end"].append(slope_up_y)
+                                                        rift_obs["x-centroid"].append(rift_centroid_x)
+                                                        rift_obs["y-centroid"].append(rift_centroid_y)
+                                                        rift_obs["lat-centroid"].append(rift_centroid_lat)
+                                                        rift_obs["lon-centroid"].append(rift_centroid_lon)
                                                         rift_obs["width"].append(rift_width)
                                                         rift_obs["time"].append(time)
                                                         rift_obs["rgt"].append(rgt)
@@ -1017,16 +1014,16 @@ def rift_cataloger(atl06_data,verbose=True):
                                                         rift_obs["confidence"].append("n/a")
 
                                                 else:
-                                                    rift_obs["d_start"].append(slope_down_d)
-                                                    rift_obs["d_end"].append(slope_up_d)
-                                                    rift_obs["x_start"].append(slope_down_x)
-                                                    rift_obs["y_start"].append(slope_down_y)
-                                                    rift_obs["x_end"].append(slope_up_x)
-                                                    rift_obs["y_end"].append(slope_up_y)
-                                                    rift_obs["x_centroid"].append(rift_centroid_x)
-                                                    rift_obs["y_centroid"].append(rift_centroid_y)
-                                                    rift_obs["lat_centroid"].append(rift_centroid_lat)
-                                                    rift_obs["lon_centroid"].append(rift_centroid_lon)
+                                                    rift_obs["d-start"].append(slope_down_d)
+                                                    rift_obs["d-end"].append(slope_up_d)
+                                                    rift_obs["x-start"].append(slope_down_x)
+                                                    rift_obs["y-start"].append(slope_down_y)
+                                                    rift_obs["x-end"].append(slope_up_x)
+                                                    rift_obs["y-end"].append(slope_up_y)
+                                                    rift_obs["x-centroid"].append(rift_centroid_x)
+                                                    rift_obs["y-centroid"].append(rift_centroid_y)
+                                                    rift_obs["lat-centroid"].append(rift_centroid_lat)
+                                                    rift_obs["lon-centroid"].append(rift_centroid_lon)
                                                     rift_obs["width"].append(rift_width)
                                                     rift_obs["time"].append(time)
                                                     rift_obs["rgt"].append(rgt)
