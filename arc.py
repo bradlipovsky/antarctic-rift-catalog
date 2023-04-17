@@ -42,10 +42,15 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     Does the output file already exist?
     '''
     if os.path.isfile(output_file_name):
-        print("Data already saved, so there's no need to ingest data. \
-    To repeat the data ingest, it would probably be best to change the filename of the \
-    existing file.")
-        return
+        print("Data already saved, so there's no need to ingest data.")
+        print("To repeat the data ingest, it would probably be best")
+        print("to change the filename of the existing file.")
+        print(" ")
+        print("Current filename is: %s"%output_file_name)
+        print(" ")
+        val = input("DANGER ZONE: Type YES to overwrite:   ")
+        if val!='YES':
+            return
     
     '''
     Load BedMachine ice mask.  We use KD-Trees to do a nearest-neighbor search. 
@@ -75,20 +80,27 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     
 
     '''
-    Read all the files in parallel.  Note that partial can't accept any arguments that can't be pickled.
-    For this reason, we have to do the mask calculations later (the KD-Tree can't be pickled.
+    Read all the files in parallel.  Note that partial can't accept any arguments that can't 
+    be pickled. For this reason, we have to do the mask calculations later (the KD-Tree can't 
+    be pickled.
     '''
     ttstart = t.perf_counter()
     func = partial(load_one_file, datapath,verbose)
-
-    pool = Pool()
-    nproc = pool._processes
-    print('Running on %d processors.'%nproc)
-
+    nproc = 8
     with Pool(nproc) as p:
         atl06_data = p.map(func, file_list)
-    df = pd.DataFrame(atl06_data)
-    display(df)
+    
+    '''
+    Expand the p.map results.  
+    
+    atl06_data looks like this:
+    len(atl06_data) = 2187  = number of p.map calls
+    len(atl06_data[0]['lat']) = 6  = number of beams
+    
+    list of dictionaries with list elements -> list of dataframes -> single dataframe
+    '''
+    output_list = list(map(pd.DataFrame, atl06_data))
+    df = pd.concat(output_list,ignore_index=True)
     print('Time to read the H5 files: ', t.perf_counter() - ttstart)
 
     '''
@@ -101,7 +113,9 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     '''
     ttstart = t.perf_counter()
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3031")
-    df_mask = df.apply (lambda row: apply_mask(row,transformer,tree,mask), axis=1)
+    
+    apply_mask_partial = lambda x: apply_mask(transformer,tree,mask,x)
+    df_mask = df.apply (apply_mask_partial, axis=1)
     output = pd.DataFrame(list(df_mask))
     output.dropna(inplace=True)
     print('Time to apply ice shelf mask: ', t.perf_counter() - ttstart)
@@ -111,6 +125,7 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     '''
     unpanda = output.to_dict('records')
     ttstart = t.perf_counter()
+    nproc = 96
     func = partial(run_pyTMD, dataset_path)
     p = Pool(nproc)
     pool_results = p.map(func, unpanda)
@@ -118,7 +133,7 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     p.join()
     output['tides'] = pool_results
     print('Calculated tides in %f s.'%(t.perf_counter() - ttstart))
-    
+
     '''
     Write to file
     '''
@@ -126,7 +141,7 @@ def ingest(file_list,output_file_name, datapath,verbose=False):
     with open(output_file_name, 'wb') as handle:
         pickle.dump(output, handle)
     print('Time to save all of the data: ', t.perf_counter() - ttstart)
-
+    
 def run_pyTMD(TIDE_PATH,row):
     # LAT, LON can be vectors, TIME is a scalar
     # 0 < LON < 360
@@ -204,11 +219,11 @@ def get_coords(shelf_name):
     return switcher[shelf_name]
 
 
-def apply_mask(row,transformer,tree,mask):
+def apply_mask(transformer,tree,mask,row):
     '''
     Apply the ice shelf mask to each row.
     '''
-
+    
     [h_x,h_y] = transformer.transform( row.lat , row.lon )
     if isinstance(h_x,float): 
         return {}
@@ -225,39 +240,42 @@ def apply_mask(row,transformer,tree,mask):
     new_row['beam'] = row['beam']
 
     return new_row
-
-
+    
 def load_one_file(datapath,verbose,f):
     if verbose:
         print('     Opening local file %s'%f)
     try:
-        fid = h5py.File(datapath + f, mode='r')
-    except FileNotFoundError:
+        fid = h5py.File( os.path.join(datapath, f), mode='r')
+    except (FileNotFoundError, OSError) as e:
         print (     'ERROR: File not found,  %s'%f)
         return {}
-    except OSError as err:
-        print("OS error: {0}".format(err))
-        return {}
+    
+    
+    
+    out = {"lat":list(),"lon":list(),"h":list(),"azimuth":list(),
+                  "h_sig":list(),"rgt":list(),"time":list(), #"acquisition_number":list(),
+                   "beam":list(), "quality":list(), "x_atc":list(),
+                   "geoid":list() }
     
     for lr in ("l","r"):
         for i in range(1,4):
             try:
-                out = {}
-                
-                out["x_atc"] =  np.array(fid['gt%i%s/land_ice_segments/ground_track/x_atc'%(i,lr)][:])
-                out["h"] =      np.array(fid['gt%i%s/land_ice_segments/h_li'%(i,lr)][:])
-                out["lat"] =    np.array(fid['gt%i%s/land_ice_segments/latitude'%(i,lr)][:])
-                out["lon"] =    np.array(fid['gt%i%s/land_ice_segments/longitude'%(i,lr)][:])
-                out["h_sig"] =  np.array(fid['gt%i%s/land_ice_segments/h_li_sigma'%(i,lr)][:])
-                out["azimuth"]= np.array(fid['gt%i%s/land_ice_segments/ground_track/seg_azimuth'%(i,lr)][:])
-                out["quality"]= np.array(fid['gt%i%s/land_ice_segments/atl06_quality_summary'%(i,lr)][:])
-                out["geoid"] =  np.array(fid['/gt%i%s/land_ice_segments/dem/geoid_h'%(i,lr)][:])
+                base = 'gt%i%s/land_ice_segments/'%(i,lr)
+                out["x_atc"].append(   np.array(fid[base + 'ground_track/x_atc'][:]) )
+                out["h"].append(       np.array(fid[base + 'h_li'][:]) )
+                out["lat"].append(     np.array(fid[base + 'latitude'][:]) )
+                out["lon"].append(     np.array(fid[base + 'longitude'][:]) )
+                out["h_sig"].append(   np.array(fid[base + 'h_li_sigma'][:]) )
+                out["azimuth"].append( np.array(fid[base + 'ground_track/seg_azimuth'][:]) )
+                out["quality"].append( np.array(fid[base + 'atl06_quality_summary'][:]) )
+                out["geoid"].append(   np.array(fid[base + 'dem/geoid_h'][:]) )
+                out["rgt"].append(  fid['/orbit_info/rgt'][0] )
+                out["time"].append(  dparser.parse( \
+                                       fid['/ancillary_data/data_start_utc'][0] ,fuzzy=True ) )
+                out["beam"].append(  "%i%s"%(i,lr) )
 
-                out["rgt"] = fid['/orbit_info/rgt'][0]
-                out["time"] = dparser.parse( fid['/ancillary_data/data_start_utc'][0] ,fuzzy=True )
-                out["beam"] = "%i%s"%(i,lr)
-
-            except KeyError:
+            except KeyError as e:
+                print(e)
                 print("ERROR: Key error, %s"%f)
 
     fid.close()
@@ -296,9 +314,11 @@ def get_rifts(atl06_data):
     arc.get_rifts 
     
     INPUT: atl06_data, dataframe with each "row" being the data from a single ATL06 file, 
-            masked to the Antarctic Ice Shelves. The keys of the dictionary are defined in arc.ingest().
+            masked to the Antarctic Ice Shelves. The keys of the dictionary are defined 
+            in arc.ingest().
             
-    OUTPUT: rift_obs, also a dictionary of lists, with each "row" corresponding to a single rift observation.  
+    OUTPUT: rift_obs, also a dictionary of lists, with each "row" corresponding to a 
+            single rift observation.  
             The dictionary keys are defined below.
     '''
 
@@ -320,7 +340,7 @@ def get_rifts(atl06_data):
     ttstart = t.perf_counter()
 
     for i, row in atl06_data.iterrows():
-        
+
         if len(row["quality"]) == 0:
             continue
 
@@ -329,15 +349,20 @@ def get_rifts(atl06_data):
         if percent_low_quality > 0.2:
             continue
 
-        # Data product is posted at 20m.  Allowing spacing to be up to 25m allows for some missing data but not much.
+        # Data product is posted at 20m.  Allowing spacing to be up to 25m allows 
+        # for some missing data but not much.
         spacing = (max(row['x_atc']) - min(row['x_atc'])) / len(row['h'])
         if spacing > 25:
             continue
-            
 
+        # Check if tides and geoid are avaialble
+        if len(row['h']) == len(row['geoid']) and len(row['geoid']) == len(row['tides']):
         
-        # measure height relative to GEOID
-        rift_list = find_the_rifts( row['h'] - row['geoid'] - row['tides'])
+            # measure height relative to GEOID
+            rift_list = find_the_rifts( row['h'] - row['geoid'] - row['tides'])
+            
+        else:
+            continue
         
         if len(rift_list) > 0:
             
