@@ -463,11 +463,42 @@ def rift_detector(trace,trace_run,d,threshold=0.6):
 
 def rift_cataloger(atl06_data,verbose=True):
     '''
-    INPUT: atl06_data, dataframe with each "row" being the data from a single ATL06 file, 
+    INPUT: atl06_data, a pandas DataFrame with each "row" being the data from a single ATL06 file, 
             masked to the Antarctic Ice Shelves. The keys of the dictionary are defined in arc.ingest().
             
-    OUTPUT: rift_obs, also a dictionary of lists, with each "row" corresponding to a single rift observation.  
-            The dictionary keys are defined below.
+    OUTPUT: rift_obs, a dictionary of lists, with each "row" corresponding to a single rift observation.  
+            The Column headings are:
+            
+            d-start       - Along-track distance to the landward rift wall (d = sqrt(x**2 + y**2))
+            d-end         - Along-track distance to the seaward rift wall
+            x-start       - Landward rift wall x location in polar stereographic coordinates (EPSG: 3031) (1)
+            y-start       - Landward rift wall y location in polar stereographic coordinates (1)
+            x-end         - Seaward rift wall x location in polar stereographic coordinates (1)
+            y-end         - Seaward rift wall y location in polar stereographic coordinates (1)
+            x-centroid    - Rift mid-point x location in polar stereographic coordinates 
+            y-centroid    - Rift mid-point y location in polar stereographic coordinates
+            lat-centroid  - Rift mid-point latitude
+            long-centroid - Rift mid-point longitude
+            width         - Rift width in ICESat-2 ground track geometry (distance between d-end and d-start) (2)
+            d_seaward     - Along-track distance to location of seaward height measurement for landward-seaward offset (3)
+            d_landward    - Along-track distance to location of landward height measurement for landward-seaward offset (3)
+            h_seaward     - height at d_seaward for landward-seaward offset (3) ### IN DEVELOPMENT ###
+            h_landward    - height at d_landward for landward-seaward offset (3) ### IN DEVELOPMENT ###
+            sl_offset     - landward-seaward height offset (3) ### IN DEVELOPMENT ###
+            time          - from ATL06 input data - Time (YYYY-MM-DD hh:mm:ss.ssssss)
+            rgt           - from ATL06 input data - Reference Ground Track
+            azimuth       - from ATL06 input data - mean of beam azimuth between d-start and d-end
+            sigma         - from ATL06 input data - mean of sigma between d-start and d-end
+            h             - mean freeboard between d-start and d-end (3) ### IN DEVELOPMENT for melange thickness ###
+            beam          - from ATL06 input data - beam
+            data_row      - Counter of main loop (i). Provides a quick way for linking rifts from same cycle, RGT and beam
+            confidence    - Rift measurement confidence (high/medium/low)
+            
+            (1) In general these are the landward and seaward rift walls, but they may be reversed in some areas.
+            (2) The rift width in ICESat-2 ground track geometry is later corrected to an estimate of actual rift width
+                using the angular offset between the RGT and the rift-perpendicular axis.
+            (3) Landward-seaward offset and melange thickness code in development
+            
     '''
     rift_obs = {
         "d-start": [],
@@ -499,18 +530,12 @@ def rift_cataloger(atl06_data,verbose=True):
     ttstart = t.perf_counter()
     
     for i, row in atl06_data.iterrows():
-        
-        #print(i)
+
         qual    = row["quality"]
         ht      = row["h"]
         geoid   = row["geoid"]
         tides   = row["tides"]
-        
-        #print(len(ht))
-        #print(len(geoid))
-        #print(len(tides))
-        
-        
+        mdt     = -1.1
         
         if len(qual) == 0:
             continue
@@ -518,12 +543,11 @@ def rift_cataloger(atl06_data,verbose=True):
         if len(ht) < 10:
             continue
 
-        h = ht - geoid - tides
+        h = ht - geoid - tides - mdt
             
-        # Only allow a certain percentage of data to be problematic
+        # Only allow a certain percentage of data to be flagged as low quality
         percent_low_quality = sum( qual==1 )  / len(qual)
         if percent_low_quality > 0.2:
-            #print("modifying "+str(i))
             # if there is a high percentage of low quality data
             # try removing bad segments of the pass
             # if that doesn't work, skip
@@ -545,17 +569,11 @@ def rift_cataloger(atl06_data,verbose=True):
             if original != 1:
                 continue
             
-
-        # Data product is posted at 20m. 
-        # Allowing spacing to be up to 25m allows for some missing data but not much.
-        spacing = (max(np.sqrt(row['x']**2 + row['y']**2)) - min(np.sqrt(row['x']**2 + row['y']**2))) \
-        / len(np.sqrt(row['x']**2 + row['y']**2))
-        #if spacing > 25:
-            #continue
-        
         # Data product is posted at 20m
         # allow the spacing to be slightly greater (25m)
-        # and ensure most gaps (e.g. 99%) are less than this
+        # and ensure most gaps (e.g. 97%) are less than this
+        spacing = (max(np.sqrt(row['x']**2 + row['y']**2)) - min(np.sqrt(row['x']**2 + row['y']**2))) \
+        / len(np.sqrt(row['x']**2 + row['y']**2))
         
         pass_x = row["x"]
         pass_y = row["y"]
@@ -575,25 +593,27 @@ def rift_cataloger(atl06_data,verbose=True):
         
         #-----------------------------
         # Define some thresholds
-        bad_threshold = 100 # points with an elevation greater than plus bad threshold
-                            # and less than minus bad threshold are discarded
-                            # This will have to change for different ice shelves
-        run_mean_dist = 10000 # distance in m each side of the point
-                              # to smooth over
-        wall_threshold = 0.8 # fraction of running mean height (>0, <1) that the subset
-                             # around the rift must reach, either side of the lowest point
-                             # for it to be considered that rift walls have been found
-        rift_qual_threshold = 0.2 # the fraction (>0, <1) of points within the rift
-                                  # that can have a low quality flag from ATL06 input
-        wall_mean_sep_threshold = 50 # maximum spacing of wall points
-        dist_half_mini = 100 # distance in m each side of a point on the walls to conduct
-                             # linear regression over to find steepest point
-        lr_threshold = 5 # minimum number of points for linear regression
-        sl_dist_threshold = 100 # maximum distance in m the points for seaward-landward offset
-                               # can be from the rift walls. Otherwise return 'nan'
+        bad_threshold = 100           # Gross error threshold (m)
+                                      # points with an elevation greater than plus bad threshold
+                                      # and less than minus bad threshold are discarded
+                                      # This will have to change for different ice shelves
+        run_mean_dist = 10000         # distance in m each side of the point
+                                      # to smooth over
+        wall_threshold_low = 0.5      # fraction of running mean height (>0, <1) that the subset
+        wall_threshold_hi = 0.8       # around the rift must reach, either side of the lowest point
+                                      # for it to be considered that rift walls have been found
+                                      # <0.5 = low (default to detection width) >0.5 = medium, >0.8 = high
+        rift_qual_threshold = 0.25    # the fraction (>0, <1) of points within the rift
+                                      # that can have a low quality flag from ATL06 input
+        wall_mean_sep_threshold = 50  # maximum spacing of wall points
+        dist_half_mini = 100          # distance in m each side of a point on the walls to conduct
+                                      # linear regression over to find steepest point
+        lr_threshold = 5              # minimum number of points for linear regression
+        sl_dist_threshold = 100       # maximum distance in m the points for seaward-landward offset
+                                      # can be from the rift walls. Otherwise return 'nan'
         
         transformer = Transformer.from_crs("EPSG:3031", "EPSG:4326")
-                         #transform polar stereographic to lat/lon
+                                      #transform polar stereographic to lat/lon
         
         
         #-----------------------------
@@ -601,11 +621,6 @@ def rift_cataloger(atl06_data,verbose=True):
         x       = row["x"]
         y       = row["y"]
         d       = np.sqrt(x**2 + y**2) #distance in m
-        #ht      = row["h"]
-        #geoid   = row["geoid"]
-        #tides   = row["tides"]
-        #mdt    = row["mdt"]
-        #qual    = row["quality"]
         rgt     = row["rgt"]
         beam    = row["beam"]
         time    = row["time"]
@@ -630,8 +645,6 @@ def rift_cataloger(atl06_data,verbose=True):
             h       = np.flip(h)
             ht      = np.flip(ht)
             geoid   = np.flip(geoid)
-            #tides   = np.flip(tides)
-            #mdt    = np.flip(mdt)
             qual    = np.flip(qual)
             azimuth = np.flip(azimuth)
             sigma   = np.flip(sigma)
@@ -646,12 +659,6 @@ def rift_cataloger(atl06_data,verbose=True):
         # make filter for bad data caused by clouds in ht 
         # and gross errors in ht and geoid using "bad_threshold"
         new_qual = np.where((ht>bad_threshold) | (ht<-bad_threshold) | (geoid>bad_threshold) | (geoid<-bad_threshold), 1, 0)
-        #new_qual = qual
-       
-        #-----------------------------
-        # calculate freeboard
-        #h = ht - geoid - tides
-        #h = ht - geoid - tides - mdt
         
         #-----------------------------
         # apply the filter to x, y, d, h, original quality, sigma and azimuth
@@ -679,12 +686,11 @@ def rift_cataloger(atl06_data,verbose=True):
         # but not for rifts at the start or end of the trace
         # tying the running mean start and end to the height ensures walls can always be found for 
         # rifts near grounding line and calving front
+        # This can be altered when the detection algorithm is updated
         h_run_tied = pd.DataFrame(h).rolling((2*run_mean_nr)+1, min_periods=1, center=True).mean()
         h_run_tied = h_run_tied.values.flatten()
-        h_run_tied[0] = -99 #np.ma.getdata(h[0])
-        h_run_tied[len(h_run_tied)-1] = -99 #np.ma.getdata(h[len(h)-1])
-        # might need to come back to this, but tie the ends artificially low to ensure the rift definition
-        # does not exceed the dimensions of the trace
+        h_run_tied[0] = -99
+        h_run_tied[len(h_run_tied)-1] = -99
     
         #-----------------------------
         # pass trace to rift detector
@@ -692,9 +698,11 @@ def rift_cataloger(atl06_data,verbose=True):
         # INPUTS (optional): threshold (fraction of running mean >0, <1, default = 0.6)
         # OUTPUTS: A series of start and stop indices for "rift" detections
                
-        rift_list = rift_detector(h,h_run,d)
+        rift_list = rift_detector(h,h_run,d,0.5)
+        
         nr_rifts = len(rift_list)   
-            
+        
+        #loop through the rifts detected by the (temporary) rift detector
         if len(rift_list) > 0:
             if verbose == True:
                 print("rift detector found "+str(nr_rifts)+" possible rifts")
@@ -713,11 +721,9 @@ def rift_cataloger(atl06_data,verbose=True):
                 rift_start = rift[0]
                 rift_end   = rift[1]
                 
-                # ignore if first or last point is in rift
+                # ignore if first or last h point is in the possible rift
                 # i.e. grounding line rift or calving front
                 # because we won't find another wall
-                
-                #if rift_start != 0 & rift_end != len(h)-1:
                 if rift_start != 0:
                     if rift_end != len(h)-1:
                         
@@ -725,6 +731,10 @@ def rift_cataloger(atl06_data,verbose=True):
                         dist_start = d[rift_start]
                         dist_end   = d[rift_end]
                         dist_rift  = dist_end - dist_start
+                        dist_start_x = x[rift_start]
+                        dist_end_x = x[rift_end]
+                        dist_start_y = y[rift_start]
+                        dist_end_y = y[rift_end]
                         
                         #-----------------------------
                         # check the detected rift isn't completely within a masked region
@@ -743,7 +753,6 @@ def rift_cataloger(atl06_data,verbose=True):
                             # define subsets of the surface, smoothed surface and distance arrays
                             # check there is something within 2 * rift detection width
                             # either side of lowest point that can be considered a rift wall
-                            # (0.8 * smoothed surface)
                             idx_around_start = next(x for x, val in enumerate(d) if val > dist_low - (2*dist_rift))
                             idx_around_end = len(d)-1 #if search window is beyond the end of the trace
                             try:
@@ -762,17 +771,27 @@ def rift_cataloger(atl06_data,verbose=True):
                             #-----------------------------
                             # ensure that there are walls within this subset around the rift
                             # search for points above threshold (default = 0.8) of running mean
-                            sub_walls = np.where(h_sub > (wall_threshold * h_run_sub))
+                            sub_walls_low = np.where(h_sub > (wall_threshold_low * h_run_sub))
+                            sub_walls_hi  = np.where(h_sub > (wall_threshold_hi * h_run_sub))
 
                             #-----------------------------
                             # ensure the proportion of low quality data is low
                             qual_walls = qual[idx_around_start:idx_around_end]
                             percent_low_qual_walls = sum(qual_walls==1) / len(qual_walls)
 
-                            if(len(sub_walls[0]) > 0) & (percent_low_qual_walls < rift_qual_threshold):
+                            if(len(sub_walls_low[0]) > 0) & (percent_low_qual_walls < rift_qual_threshold):
                                 #ie something was found above the threshold
                                 #and only a small number of rift points are low quality
-                                if(np.amin(sub_walls) < sub_rift_low_idx) & (np.amax(sub_walls) > sub_rift_low_idx):
+                                
+                                # work out whether there are points on either side of the rift that exceed
+                                # the thresholds to be considered medium or high confidence detections
+                                if(np.amin(sub_walls_low) < sub_rift_low_idx) & (np.amax(sub_walls_low) > sub_rift_low_idx):
+                                    confidence = "medium"
+                                    if(len(sub_walls_hi[0]) > 0):
+                                        if(np.amin(sub_walls_hi) < sub_rift_low_idx) &\
+                                        (np.amax(sub_walls_hi) > sub_rift_low_idx):
+                                            confidence = "high"
+                                
                                     if verbose == True:
                                         print("processing rift: both walls found within distance limit")
                                     
@@ -788,8 +807,8 @@ def rift_cataloger(atl06_data,verbose=True):
                                     rift_end_idx = walls[walls.searchsorted(rift_low_idx,'right')]
                                     
                                     #-----------------------------
-                                    # extract arrays for rift start to lowest point
-                                    # and lowest point to rift end
+                                    # extract arrays for rift start to lowest point (where the landward wall will be)
+                                    # and lowest point to rift end (where the seaward wall will be)
                                     h_sub_walls_before = h[rift_start_idx:rift_low_idx+1]
                                     d_sub_walls_before = d[rift_start_idx:rift_low_idx+1]
                                     x_sub_walls_before = x[rift_start_idx:rift_low_idx+1]
@@ -833,7 +852,8 @@ def rift_cataloger(atl06_data,verbose=True):
                                         # make sure there are a sufficient number of points in the walls
                                         # to calculate steepest slope location
                                         if (len(h_sub_walls_before) > 3)  & (len(h_sub_walls_after) > 3):
-                                            #-----------------------------
+                                            #----------
+                                            # DETECTION OF RIFT WALLS
                                             # find sections of the before array that are continuously going down
 
                                             # initialise
@@ -860,7 +880,7 @@ def rift_cataloger(atl06_data,verbose=True):
                                                 down_h_diff.append(down_h[0] - down_h[len(down_h)-1])
 
                                             # does anything exceed half of rift depth?
-                                            # if so, the closest to the lowest point it probably the wall
+                                            # if so, the closest to the lowest point is probably the wall
                                             # else the wall is the section with the largest h decrease
                                             down_above_threshold = (down_h_diff > updown_threshold).astype(int)
 
@@ -883,8 +903,6 @@ def rift_cataloger(atl06_data,verbose=True):
 
                                             #-----------------------------
                                             # find sections of the array array that are continuously going up
-
-                                            #print(h_sub_walls_after)
 
                                             # initialise
                                             up = np.zeros(len(h_sub_walls_after)-1)
@@ -932,6 +950,7 @@ def rift_cataloger(atl06_data,verbose=True):
                                             y_array_upslope = y_sub_walls_after[up_selected_start_idx:up_selected_end_idx]
 
                                             #-----------------------------
+                                            # SELECTION OF STEEPEST SLOPES
                                             # perform mini linear regression over small distances to find
                                             # the steepest slopes of the array subsets defined as the rift walls
 
@@ -946,8 +965,9 @@ def rift_cataloger(atl06_data,verbose=True):
                                             slope_lr_up = []
 
 
-                                            # loop through each platelet on the rift wall
+                                            # loop through each segment on the rift wall
                                             # perform linear regression using all points within the distance limit
+                                            # down
                                             for dr in range (0,len(d_array_downslope)):
                                                 dist_min = d_array_downslope[dr] - dist_half_mini
                                                 dist_max = d_array_downslope[dr] + dist_half_mini
@@ -964,6 +984,7 @@ def rift_cataloger(atl06_data,verbose=True):
                                                     lr_slope = linregress(d_lr_down_points,h_lr_down_points).slope
                                                     slope_lr_down.append(lr_slope)
 
+                                            # up
                                             for ur in range (0,len(d_array_upslope)):
                                                 dist_min = d_array_upslope[ur] - dist_half_mini
                                                 dist_max = d_array_upslope[ur] + dist_half_mini
@@ -1004,7 +1025,7 @@ def rift_cataloger(atl06_data,verbose=True):
                                                 # calculate rift width
                                                 rift_width = slope_up_d - slope_down_d
                                                 if verbose == True:
-                                                    print("rift width: "+str(round(rift_width,2))+" m")
+                                                    print("rift width (satellite geometry): "+str(round(rift_width,2))+" m")
 
                                                 if rift_width > 40: #platelet size
 
@@ -1022,7 +1043,7 @@ def rift_cataloger(atl06_data,verbose=True):
                                                     rift_h = h[az_start_idx:az_end_idx].mean()
                                                     
                                                     #-----------------------------
-                                                    # extrat values and calculate landward-seaward offset
+                                                    # extract values and calculate landward-seaward offset
                                                     # Catherine suggested using the h values from immediately 
                                                     # outside the rift detection
                                                     
@@ -1055,6 +1076,10 @@ def rift_cataloger(atl06_data,verbose=True):
                                                     # append to list for output
                                                     rc = len(rift_obs["d-start"]) #rift_counter
 
+                                                    # if this rift overlaps with previous rift
+                                                    # use outermost detected walls of the two rifts
+                                                    # and recalculate other values
+                                                    # then add to the output
                                                     if rc > 0:
                                                         # if the beginning of the current rift
                                                         # is inside the bounds of the previous rift
@@ -1109,9 +1134,12 @@ def rift_cataloger(atl06_data,verbose=True):
                                                             rift_obs["sigma"][rc-1] = rift_sigma
                                                             rift_obs["h"][rc-1] = rift_h
                                                             
+                                                            rift_obs["confidence"][rc-1] = confidence
                                                             
 
                                                         else:
+                                                            # if this rift doesn't overlap with the previous rift
+                                                            # then add to the output
                                                             rift_obs["d-start"].append(slope_down_d)
                                                             rift_obs["d-end"].append(slope_up_d)
                                                             rift_obs["x-start"].append(slope_down_x)
@@ -1135,9 +1163,11 @@ def rift_cataloger(atl06_data,verbose=True):
                                                             rift_obs["h"].append(rift_h)
                                                             rift_obs["beam"].append(beam)
                                                             rift_obs["data_row"].append(i)
-                                                            rift_obs["confidence"].append("n/a")
+                                                            rift_obs["confidence"].append(confidence)
 
                                                     else:
+                                                        # if this is the first rift
+                                                        # add to the ooutput
                                                         rift_obs["d-start"].append(slope_down_d)
                                                         rift_obs["d-end"].append(slope_up_d)
                                                         rift_obs["x-start"].append(slope_down_x)
@@ -1161,36 +1191,220 @@ def rift_cataloger(atl06_data,verbose=True):
                                                         rift_obs["h"].append(rift_h)
                                                         rift_obs["beam"].append(beam)
                                                         rift_obs["data_row"].append(i)
-                                                        rift_obs["confidence"].append("n/a")
+                                                        rift_obs["confidence"].append(confidence)
                                                         
                                                         
 
-                                                else: #rift width <40, problem with wall finding
+                                                else:
+                                                    # rift width <40m, i.e. the size of an ATL06 platelet
+                                                    # skip the rift
                                                     if verbose == True:
                                                         print("skipping rift: rift width below platelet size")
                                                         print("suggests wall finding error")
 
-                                            else: #couldn't calculate the the steepest slope on one or both walls
-                                                if verbose == True:
-                                                    print("skipping rift: insufficient points in the walls")
+                                            else:
+                                                # couldn't calculate the the steepest slope on one or both walls
+                                                # within the quality thresholds
+                                                # then we default to the initial rift width from the are below
+                                                # 50% (or chosen threshold) of running mean
+                                                # ----------
+                                                # in the Halloween Crack case study, this was a small number
+                                                # of narrow rift areas (~100m) where an iceberg or semi-detached block
+                                                # bisected the rift.
+                                                # Low confidence detections were discarded unless they are merged with
+                                                # a high confidence detection. However, keeping them helps improve the
+                                                # accuracy of those measurements which are bisected.
+                                                # ----------
+                                                
+                                                confidence = "low"
+                                    
+                                                # calculate the coordinates of the center of the rift (polar stereographic)
+                                                rift_centroid_x = (dist_start_x + dist_end_x) / 2
+                                                rift_centroid_y = (dist_start_y + dist_end_y) / 2
 
-                                        else: # insufficient points in the walls
+                                                # calculate the coordinates of the center of the rift (lat/lon)
+                                                [rift_centroid_lat,rift_centroid_lon] = \
+                                                transformer.transform(rift_centroid_x,rift_centroid_y)
+
+                                                # calculate rift width
+                                                rift_width = dist_end - dist_start
+
+                                                seaward_d = np.nan
+                                                landward_d = np.nan
+                                                seaward_h = np.nan
+                                                landward_h = np.nan
+                                                sl_offset = np.nan
+
+                                                rift_azimuth = azimuth[rift_start:rift_end+1].mean()
+                                                rift_sigma = sigma[rift_start:rift_end+1].mean()
+                                                rift_h = np.nan
+                                    
+                                                rift_obs["d-start"].append(dist_start)
+                                                rift_obs["d-end"].append(dist_end)
+                                                rift_obs["x-start"].append(dist_start_x)
+                                                rift_obs["y-start"].append(dist_start_y)
+                                                rift_obs["x-end"].append(dist_end_x)
+                                                rift_obs["y-end"].append(dist_end_y)
+                                                rift_obs["x-centroid"].append(rift_centroid_x)
+                                                rift_obs["y-centroid"].append(rift_centroid_y)
+                                                rift_obs["lat-centroid"].append(rift_centroid_lat)
+                                                rift_obs["lon-centroid"].append(rift_centroid_lon)
+                                                rift_obs["width"].append(rift_width)
+                                                rift_obs["d_seaward"].append(seaward_d)
+                                                rift_obs["d_landward"].append(landward_d)
+                                                rift_obs["h_seaward"].append(seaward_h)
+                                                rift_obs["h_landward"].append(landward_h)
+                                                rift_obs["sl_offset"].append(sl_offset)
+                                                rift_obs["time"].append(time)
+                                                rift_obs["rgt"].append(rgt)
+                                                rift_obs["azimuth"].append(rift_azimuth)
+                                                rift_obs["sigma"].append(rift_sigma)
+                                                rift_obs["h"].append(rift_h)
+                                                rift_obs["beam"].append(beam)
+                                                rift_obs["data_row"].append(i)
+                                                rift_obs["confidence"].append(confidence) 
+                                                
+                                                
+                                                
+                                                if verbose == True:
+                                                    #print("skipping rift: insufficient points in the walls")
+                                                    print("cannot refine rift measurements")
+                                                    print("defaulting to initial estimate")
+                                                    print("confidence: low")
+
+                                        else:
+                                            # couldn't calculate the the steepest slope on one or both walls
+                                            # because there were too few quality ATL06 measurements
+                                            # then we default to the initial rift width from the are below
+                                            # 50% (or chosen threshold) of running mean
+                                            # ----------
+                                            # see Halloween Crack case study information above
+                                            # ----------
+                                            
+                                            confidence = "low"
+                                            
+                                            # calculate the coordinates of the center of the rift (polar stereographic)
+                                            rift_centroid_x = (dist_start_x + dist_end_x) / 2
+                                            rift_centroid_y = (dist_start_y + dist_end_y) / 2
+
+                                            # calculate the coordinates of the center of the rift (lat/lon)
+                                            [rift_centroid_lat,rift_centroid_lon] = \
+                                            transformer.transform(rift_centroid_x,rift_centroid_y)
+
+                                            # calculate rift width
+                                            rift_width = dist_end - dist_start
+
+                                            seaward_d = np.nan
+                                            landward_d = np.nan
+                                            seaward_h = np.nan
+                                            landward_h = np.nan
+                                            sl_offset = np.nan
+
+                                            rift_azimuth = azimuth[rift_start:rift_end+1].mean()
+                                            rift_sigma = sigma[rift_start:rift_end+1].mean()
+                                            rift_h = np.nan
+                                    
+                                            rift_obs["d-start"].append(dist_start)
+                                            rift_obs["d-end"].append(dist_end)
+                                            rift_obs["x-start"].append(dist_start_x)
+                                            rift_obs["y-start"].append(dist_start_y)
+                                            rift_obs["x-end"].append(dist_end_x)
+                                            rift_obs["y-end"].append(dist_end_y)
+                                            rift_obs["x-centroid"].append(rift_centroid_x)
+                                            rift_obs["y-centroid"].append(rift_centroid_y)
+                                            rift_obs["lat-centroid"].append(rift_centroid_lat)
+                                            rift_obs["lon-centroid"].append(rift_centroid_lon)
+                                            rift_obs["width"].append(rift_width)
+                                            rift_obs["d_seaward"].append(seaward_d)
+                                            rift_obs["d_landward"].append(landward_d)
+                                            rift_obs["h_seaward"].append(seaward_h)
+                                            rift_obs["h_landward"].append(landward_h)
+                                            rift_obs["sl_offset"].append(sl_offset)
+                                            rift_obs["time"].append(time)
+                                            rift_obs["rgt"].append(rgt)
+                                            rift_obs["azimuth"].append(rift_azimuth)
+                                            rift_obs["sigma"].append(rift_sigma)
+                                            rift_obs["h"].append(rift_h)
+                                            rift_obs["beam"].append(beam)
+                                            rift_obs["data_row"].append(i)
+                                            rift_obs["confidence"].append(confidence) 
+                                            
                                             if verbose == True:
-                                                print("skipping rift: insufficient points in the walls")
+                                                print("cannot refine rift measurements")
+                                                print("defaulting to initial estimate")
+                                                print("confidence: low")
                                             
                                     else: # points within reasonable distance meet wall threshold only on one side
                                         if verbose == True:
-                                            print("skipping rift: (unmasked) walls not found within distance limit")
-                                            print("or points in wall are too sparse")
+                                            print("skipping rift: cannot confidently locate both walls")
+                                            # could default to initial estimate with low confidence here
                             
                                 else: # points within reasonable distance meet wall threshold only on one side
                                     if verbose == True:
-                                        print("skipping rift: walls not found within distance limit")
+                                        print("skipping rift: cannot confidently locate both walls")
+                                        # could default to initial estimate with low confidence here
 
-                            else: # no points within a reasonable distance meet the wall threshold
+                            else:
+                                # Rift walls do not exceed the threshold for medium/high confidence detection
+                                # then we default to the initial rift width from the are below
+                                # 50% (or chosen threshold) of running mean
+                                # ----------
+                                # see Halloween Crack case study information above
+                                # ----------
+                                
+                                confidence = "low"
+                                    
+                                # calculate the coordinates of the center of the rift (polar stereographic)
+                                rift_centroid_x = (dist_start_x + dist_end_x) / 2
+                                rift_centroid_y = (dist_start_y + dist_end_y) / 2
+
+                                # calculate the coordinates of the center of the rift (lat/lon)
+                                [rift_centroid_lat,rift_centroid_lon] = \
+                                transformer.transform(rift_centroid_x,rift_centroid_y)
+
+                                # calculate rift width
+                                rift_width = dist_end - dist_start
+                                    
+                                seaward_d = np.nan
+                                landward_d = np.nan
+                                seaward_h = np.nan
+                                landward_h = np.nan
+                                sl_offset = np.nan
+                                    
+                                rift_azimuth = azimuth[rift_start:rift_end+1].mean()
+                                rift_sigma = sigma[rift_start:rift_end+1].mean()
+                                rift_h = np.nan
+                                    
+                                rift_obs["d-start"].append(dist_start)
+                                rift_obs["d-end"].append(dist_end)
+                                rift_obs["x-start"].append(dist_start_x)
+                                rift_obs["y-start"].append(dist_start_y)
+                                rift_obs["x-end"].append(dist_end_x)
+                                rift_obs["y-end"].append(dist_end_y)
+                                rift_obs["x-centroid"].append(rift_centroid_x)
+                                rift_obs["y-centroid"].append(rift_centroid_y)
+                                rift_obs["lat-centroid"].append(rift_centroid_lat)
+                                rift_obs["lon-centroid"].append(rift_centroid_lon)
+                                rift_obs["width"].append(rift_width)
+                                rift_obs["d_seaward"].append(seaward_d)
+                                rift_obs["d_landward"].append(landward_d)
+                                rift_obs["h_seaward"].append(seaward_h)
+                                rift_obs["h_landward"].append(landward_h)
+                                rift_obs["sl_offset"].append(sl_offset)
+                                rift_obs["time"].append(time)
+                                rift_obs["rgt"].append(rgt)
+                                rift_obs["azimuth"].append(rift_azimuth)
+                                rift_obs["sigma"].append(rift_sigma)
+                                rift_obs["h"].append(rift_h)
+                                rift_obs["beam"].append(beam)
+                                rift_obs["data_row"].append(i)
+                                rift_obs["confidence"].append(confidence)    
+                                
                                 if verbose == True:
-                                    print("skipping rift: walls not found within distance limit")
-                                    print("or too many low quality points in rift")
+                                    print("cannot refine rift measurements")
+                                    print("defaulting to initial estimate")
+                                    print("confidence: low")
+                                    
 
                         else: # all points of given rift are masked
                             if verbose == True:
@@ -1204,6 +1418,8 @@ def rift_cataloger(atl06_data,verbose=True):
                 else: # rift start = 0
                     if verbose == True:
                         print("skipping rift: possible grounding line rift")
+                        # we will come back to this. We don't want to skip rifts at the grounding line
+                        # but for now the ATL06 is clipped to ice shelf shapefiles
                 
         else: # rift detector didn't find any rifts 
             if verbose == True:
@@ -1216,9 +1432,7 @@ def rift_cataloger(atl06_data,verbose=True):
             print("beam: "+beam)
             print("date: "+str(time))
         
-    #remove any duplicates, return the total number of rifts found
     rift_obs = pd.DataFrame(rift_obs)
-    #rift_obs = rift_obs.drop_duplicates()
     nr_rifts_final = len(rift_obs)
     
     #if verbose == True:
@@ -1231,6 +1445,9 @@ def rift_cataloger(atl06_data,verbose=True):
     print("time to detect rifts: "+str(round((ttend - ttstart)/60, 1))+" minutes")
     
     return(rift_obs)    
+
+
+
 
 
 
