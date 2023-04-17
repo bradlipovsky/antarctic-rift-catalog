@@ -1,4 +1,5 @@
-#Antarctic Rift Cataloger
+# Antarctic Rift Cataloger
+[![DOI](https://zenodo.org/badge/278439106.svg)](https://zenodo.org/badge/latestdoi/278439106)
 
 Detect and measure rifts using ICESat-2 ATL06/SlideRule data product:
 
